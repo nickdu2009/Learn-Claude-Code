@@ -115,11 +115,18 @@ func main() {
 }
 
 // agentLoop 是核心循环：调用 LLM → 检测 tool_calls → 执行工具 → 追加结果 → 循环。
+// workDir 指定 bash 命令的工作目录，为空时使用当前进程工作目录。
 func agentLoop(
 	llm LLMClient,
 	system string,
 	messages []openai.ChatCompletionMessageParamUnion,
+	workDir ...string,
 ) []openai.ChatCompletionMessageParamUnion {
+	cwd := ""
+	if len(workDir) > 0 && workDir[0] != "" {
+		cwd = workDir[0]
+	}
+
 	for {
 		// system prompt 作为首条消息传入（OpenAI 协议）
 		fullMessages := append([]openai.ChatCompletionMessageParamUnion{
@@ -154,7 +161,7 @@ func agentLoop(
 			command, _ := args["command"].(string)
 			fmt.Printf("%s$ %s%s\n", colorYellow, command, colorReset)
 
-			output := runBash(command)
+			output := runBashIn(command, cwd)
 			preview := output
 			if len(preview) > 200 {
 				preview = preview[:200]
@@ -166,8 +173,14 @@ func agentLoop(
 	}
 }
 
-// runBash 执行 shell 命令，拦截危险指令，限制输出长度。
+// runBash 执行 shell 命令，工作目录为当前进程目录。
 func runBash(command string) string {
+	return runBashIn(command, "")
+}
+
+// runBashIn 执行 shell 命令，拦截危险指令，限制输出长度。
+// dir 为空时使用当前进程工作目录。
+func runBashIn(command, dir string) string {
 	for _, pattern := range dangerousPatterns {
 		if strings.Contains(command, pattern) {
 			return "Error: Dangerous command blocked"
@@ -175,7 +188,11 @@ func runBash(command string) string {
 	}
 
 	cmd := exec.Command("bash", "-c", command)
-	cmd.Dir, _ = os.Getwd()
+	if dir != "" {
+		cmd.Dir = dir
+	} else {
+		cmd.Dir, _ = os.Getwd()
+	}
 	out, err := cmd.CombinedOutput()
 
 	result := strings.TrimSpace(string(out))
