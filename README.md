@@ -53,37 +53,37 @@ User --> messages[] --> LLM --> response
 
 ```mermaid
 flowchart TD
-    subgraph Phase1["阶段一：核心循环"]
-        S01["s01 Agent Loop\n一个循环 + Bash 即可"]
-        S02["s02 Tool Use\n工具分发 dispatch map"]
-        S01 --> S02
-    end
+  subgraph "阶段一：核心循环"
+    S01["s01 Agent Loop<br/>一个循环 + Bash 即可"]
+    S02["s02 Tool Use<br/>工具分发 dispatch map"]
+    S01 --> S02
+  end
 
-    subgraph Phase2["阶段二：规划与知识"]
-        S03["s03 TodoWrite\n先列计划再执行"]
-        S04["s04 Subagents\n子任务独立 messages[]"]
-        S05["s05 Skills\n按需注入知识"]
-        S06["s06 Context Compact\n三层压缩策略"]
-        S03 --> S04 --> S05 --> S06
-    end
+  subgraph "阶段二：规划与知识"
+    S03["s03 TodoWrite<br/>先列计划再执行"]
+    S04["s04 Subagents<br/>子任务独立 messages[]"]
+    S05["s05 Skills<br/>按需注入知识"]
+    S06["s06 Context Compact<br/>三层压缩策略"]
+    S03 --> S04 --> S05 --> S06
+  end
 
-    subgraph Phase3["阶段三：持久化"]
-        S07["s07 Tasks\n文件级任务图 + 依赖"]
-        S08["s08 Background Tasks\ngoroutine 后台执行"]
-        S07 --> S08
-    end
+  subgraph "阶段三：持久化"
+    S07["s07 Tasks<br/>文件级任务图 + 依赖"]
+    S08["s08 Background Tasks<br/>goroutine 后台执行"]
+    S07 --> S08
+  end
 
-    subgraph Phase4["阶段四：多智能体团队"]
-        S09["s09 Agent Teams\n持久化队友 + JSONL 邮箱"]
-        S10["s10 Team Protocols\n关机 + 计划审批 FSM"]
-        S11["s11 Autonomous Agents\n空闲轮询 + 自动认领"]
-        S12["s12 Worktree Isolation\n任务与目录隔离"]
-        S09 --> S10 --> S11 --> S12
-    end
+  subgraph "阶段四：多智能体团队"
+    S09["s09 Agent Teams<br/>持久化队友 + JSONL 邮箱"]
+    S10["s10 Team Protocols<br/>关机 + 计划审批 FSM"]
+    S11["s11 Autonomous Agents<br/>空闲轮询 + 自动认领"]
+    S12["s12 Worktree Isolation<br/>任务与目录隔离"]
+    S09 --> S10 --> S11 --> S12
+  end
 
-    S02 --> S03
-    S06 --> S07
-    S08 --> S09
+  S02 --> S03
+  S06 --> S07
+  S08 --> S09
 ```
 
 12 个 Session，每个 Session 在同一个循环上叠加一个机制：

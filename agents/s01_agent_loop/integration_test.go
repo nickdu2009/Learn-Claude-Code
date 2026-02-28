@@ -17,28 +17,18 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
+	"github.com/nickdu2009/learn-claude-code/pkg/testcases"
 	"github.com/openai/openai-go"
 )
 
 func TestMain(m *testing.M) {
-	// Force test-generated devtools data into a dedicated, git-ignored directory.
-	// If the repo root can't be located, fall back to OS temp dir.
 	cwd, _ := os.Getwd()
 	root := findRepoRootForTest(cwd)
-	var artifactsRoot string
 	if root != "" {
-		artifactsRoot = filepath.Join(root, ".local", "test-artifacts", "devtools")
-	} else {
-		artifactsRoot = filepath.Join(os.TempDir(), "learn-claude-code", "test-artifacts", "devtools")
+		_ = os.MkdirAll(filepath.Join(root, ".devtools"), 0o755)
+		_ = os.Setenv("AI_SDK_DEVTOOLS_DIR", filepath.Join(root, ".devtools"))
 	}
-	_ = os.MkdirAll(artifactsRoot, 0o755)
-	_ = os.Setenv("AI_SDK_DEVTOOLS_DIR", artifactsRoot)
-
-	code := m.Run()
-
-	// Keep the workspace clean; data is not meant to be committed.
-	_ = os.RemoveAll(filepath.Dir(filepath.Dir(artifactsRoot))) // .../test-artifacts
-	os.Exit(code)
+	os.Exit(m.Run())
 }
 
 func findRepoRootForTest(start string) string {
@@ -86,8 +76,7 @@ func runAgent(t *testing.T, llm LLMClient, system, prompt, workDir string) (stri
 	messages := []openai.ChatCompletionMessageParamUnion{
 		openai.UserMessage(prompt),
 	}
-	rec := devtools.NewRunRecorderFromEnv()
-	result := agentLoop(llm, system, messages, workDir, rec)
+	result := agentLoop(llm, system, messages, workDir, devtools.NewRunRecorderFromEnv())
 
 	// 提取最终文本回复
 	last := result[len(result)-1]
@@ -113,7 +102,7 @@ func runAgent(t *testing.T, llm LLMClient, system, prompt, workDir string) (stri
 func TestIntegration_CreateFile(t *testing.T) {
 	skipIfNoAPIKey(t)
 
-	tmpDir := t.TempDir()
+	tmpDir := localWorkDir(t)
 	system := "You are a coding agent at " + tmpDir + ". Use bash to solve tasks. Act, don't explain."
 	llm, _ := newRealAgent(t)
 
@@ -141,7 +130,7 @@ func TestIntegration_CreateFile(t *testing.T) {
 func TestIntegration_ReadFile(t *testing.T) {
 	skipIfNoAPIKey(t)
 
-	tmpDir := t.TempDir()
+	tmpDir := localWorkDir(t)
 	system := "You are a coding agent at " + tmpDir + ". Use bash to solve tasks. Act, don't explain."
 	llm, _ := newRealAgent(t)
 
@@ -164,7 +153,7 @@ func TestIntegration_ReadFile(t *testing.T) {
 func TestIntegration_MultiStep(t *testing.T) {
 	skipIfNoAPIKey(t)
 
-	tmpDir := t.TempDir()
+	tmpDir := localWorkDir(t)
 	system := "You are a coding agent at " + tmpDir + ". Use bash to solve tasks. Act, don't explain."
 	llm, _ := newRealAgent(t)
 
@@ -198,7 +187,7 @@ func TestIntegration_MultiStep(t *testing.T) {
 func TestIntegration_DangerousCommandRefused(t *testing.T) {
 	skipIfNoAPIKey(t)
 
-	tmpDir := t.TempDir()
+	tmpDir := localWorkDir(t)
 	system := "You are a coding agent at " + tmpDir + ". Use bash to solve tasks. Act, don't explain."
 	llm, _ := newRealAgent(t)
 
@@ -215,7 +204,7 @@ func TestIntegration_DangerousCommandRefused(t *testing.T) {
 func TestIntegration_MultiRound(t *testing.T) {
 	skipIfNoAPIKey(t)
 
-	tmpDir := t.TempDir()
+	tmpDir := localWorkDir(t)
 	system := "You are a coding agent at " + tmpDir + ". Use bash to solve tasks. Act, don't explain."
 	llm, _ := newRealAgent(t)
 
@@ -223,12 +212,11 @@ func TestIntegration_MultiRound(t *testing.T) {
 	history := []openai.ChatCompletionMessageParamUnion{
 		openai.UserMessage("Create a file named memo.txt with content: round_one"),
 	}
-	rec := devtools.NewRunRecorderFromEnv()
-	history = agentLoop(llm, system, history, tmpDir, rec)
+	history = agentLoop(llm, system, history, tmpDir, nil)
 
 	// 第二轮：基于上下文追加内容（Agent 应记得 memo.txt）
 	history = append(history, openai.UserMessage("Append the text ' round_two' to memo.txt"))
-	history = agentLoop(llm, system, history, tmpDir, rec)
+	history = agentLoop(llm, system, history, tmpDir, nil)
 
 	// 验证文件包含两轮内容
 	content, err := os.ReadFile(filepath.Join(tmpDir, "memo.txt"))
@@ -245,79 +233,111 @@ func TestIntegration_MultiRound(t *testing.T) {
 	}
 }
 
-// TestIntegration_ReactViteProject 验证 Agent 能生成一个 React + Vite 前端项目（仅写文件，不安装依赖），
-// 页面包含输入 name，并展示 "say {name}"。
+// TestIntegration_ReactViteProject 使用一个“真实/通用”前端需求（Todo App）作为集成测试用例，
+// 验证 Agent 能在禁网约束下通过 bash 工具在 ./frontend 生成 React + Vite 项目骨架与指定 src/ 结构。
+//
+// 该需求以 Markdown 形式存储在 pkg/testcases/react_vite_todo_prompt.md，并通过 go:embed 方式读取，
+// 以保证测试不依赖运行时路径与 repo root 搜索逻辑。
+//
+// 约束：
+// - 禁止执行 npm/pnpm/yarn/curl/wget/git 等下载/联网命令（如需“npm create”，改为手动创建等价文件）
+// - 写多行源码必须使用 cat <<'EOF' heredoc，避免 shell 插值破坏 JSX
+// - 最终回复必须仅为 "done"（确保动作通过工具执行，而不是把脚本粘贴在回复里）
 func TestIntegration_ReactViteProject(t *testing.T) {
 	skipIfNoAPIKey(t)
 
-	tmpDir := t.TempDir()
-	system := "You are a coding agent at " + tmpDir + ". Use bash to solve tasks. Act, don't explain."
+	tmpDir := localWorkDir(t)
+	system := strings.Join([]string{
+		"You are a coding agent at " + tmpDir + ". Use bash to solve tasks. Act, don't explain.",
+		"Network/download commands are forbidden (npm/pnpm/yarn/curl/wget/git).",
+		"If the prompt asks you to initialize a project with npm create, manually create the equivalent files instead.",
+		"Create the project root at ./frontend (do not create nested ./frontend/frontend).",
+		"When writing source files, do NOT use echo with double quotes.",
+		"Always use a single-quoted heredoc to avoid shell interpolation, for example:",
+		"cat > path/to/file <<'EOF'\n...file content...\nEOF",
+		"Do NOT paste shell scripts/commands in your reply. If you need to run a command, call the bash tool.",
+		"After finishing, reply with the single word: done (and nothing else).",
+	}, " ")
 	llm, _ := newRealAgent(t)
 
+	tc := testcases.LoadReactViteTodoPrompt()
 	prompt := strings.Join([]string{
-		"Create a new frontend project under a folder named 'frontend' in the current directory.",
-		"It must be a React + Vite project (TypeScript).",
-		"Do NOT run npm install, pnpm install, yarn install, or any network/download commands. Just create the files.",
-		"Requirements:",
-		"- package.json with scripts: dev, build, preview and dependencies including react, react-dom; devDependencies including vite, typescript, @vitejs/plugin-react",
-		"- index.html with a #root element",
-		"- src/main.tsx mounting <App /> to #root",
-		"- src/App.tsx: render an input for name (controlled component), and below it render text exactly in the form: \"say <name>\" (if empty, show \"say \" with empty name is OK).",
-		"- minimal vite.config.ts and tsconfig.json so it's a standard Vite React TS template.",
+		tc,
+		"",
+		"Additional constraints for this run:",
+		"- Project root is ./frontend (single folder; do not create frontend/frontend).",
+		"- Use JavaScript (JSX) per the file structure in the spec.",
+		"- Do not run npm create/install; just create files.",
+		"- Create a runnable Vite + React project scaffold in frontend/, including at least: package.json and index.html (plus src/ per the spec).",
+		"- Important: execute all file creation via the bash tool. Do not output command blocks/scripts in the reply.",
+		"",
+		"Hard requirements (must create all of these files under ./frontend):",
+		"- package.json",
+		"- index.html",
+		"- src/main.jsx",
+		"- src/App.jsx",
+		"- src/App.css",
+		"- src/components/TodoInput.jsx",
+		"- src/components/TodoList.jsx",
+		"- src/components/TodoItem.jsx",
+		"- src/components/TodoFooter.jsx",
+		"",
+		"Before replying 'done', run a single bash command that verifies all files exist (e.g. ls -la for each, or a shell test loop).",
 	}, "\n")
 
 	reply, _ := runAgent(t, llm, system, prompt, tmpDir)
 	t.Logf("Agent reply: %s", reply)
 
+	// Reply must be exactly "done" to ensure the agent executed actions via tools, not by pasting scripts.
+	if strings.TrimSpace(strings.ToLower(reply)) != "done" {
+		t.Fatalf("expected reply to be exactly 'done', got %q", reply)
+	}
+
 	// Verify key files exist
 	frontendDir := filepath.Join(tmpDir, "frontend")
-	pkgJSONPath := filepath.Join(frontendDir, "package.json")
-	appPath := filepath.Join(frontendDir, "src", "App.tsx")
-	mainPath := filepath.Join(frontendDir, "src", "main.tsx")
-	indexPath := filepath.Join(frontendDir, "index.html")
-
-	pkgJSON, err := os.ReadFile(pkgJSONPath)
-	if err != nil {
-		t.Fatalf("expected %s to be created, got error: %v", pkgJSONPath, err)
+	paths := []string{
+		filepath.Join(frontendDir, "package.json"),
+		filepath.Join(frontendDir, "index.html"),
+		filepath.Join(frontendDir, "src", "main.jsx"),
+		filepath.Join(frontendDir, "src", "App.jsx"),
+		filepath.Join(frontendDir, "src", "App.css"),
+		filepath.Join(frontendDir, "src", "components", "TodoInput.jsx"),
+		filepath.Join(frontendDir, "src", "components", "TodoList.jsx"),
+		filepath.Join(frontendDir, "src", "components", "TodoItem.jsx"),
+		filepath.Join(frontendDir, "src", "components", "TodoFooter.jsx"),
 	}
-	if !strings.Contains(string(pkgJSON), "\"vite\"") || !strings.Contains(string(pkgJSON), "\"react\"") {
-		t.Errorf("expected package.json to include vite and react, got: %s", string(pkgJSON))
-	}
-	if !strings.Contains(string(pkgJSON), "\"dev\"") || !strings.Contains(string(pkgJSON), "\"build\"") || !strings.Contains(string(pkgJSON), "\"preview\"") {
-		t.Errorf("expected package.json scripts to include dev/build/preview, got: %s", string(pkgJSON))
-	}
-
-	indexHTML, err := os.ReadFile(indexPath)
-	if err != nil {
-		t.Fatalf("expected %s to be created, got error: %v", indexPath, err)
-	}
-	// Models sometimes generate escaped quotes (id=\"root\"). Normalize for robustness.
-	indexNormalized := strings.ReplaceAll(string(indexHTML), `\"`, `"`)
-	if !strings.Contains(indexNormalized, `id="root"`) {
-		t.Errorf("expected index.html to contain #root, got: %s", string(indexHTML))
+	for _, p := range paths {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("expected %s to exist, got error: %v", p, err)
+		}
 	}
 
-	mainTSX, err := os.ReadFile(mainPath)
+	appPath := filepath.Join(frontendDir, "src", "App.jsx")
+	appJSX, err := os.ReadFile(appPath)
 	if err != nil {
-		t.Fatalf("expected %s to be created, got error: %v", mainPath, err)
+		t.Fatalf("failed to read %s: %v", appPath, err)
 	}
-	if !strings.Contains(string(mainTSX), "createRoot") && !strings.Contains(string(mainTSX), "ReactDOM") {
-		t.Errorf("expected main.tsx to mount app to root, got: %s", string(mainTSX))
+	appLower := strings.ToLower(string(appJSX))
+	if !strings.Contains(appLower, "localstorage") || !strings.Contains(string(appJSX), "todo-list-data") {
+		t.Errorf("expected App.jsx to persist to localStorage key 'todo-list-data', got: %s", string(appJSX))
 	}
+	if !strings.Contains(appLower, "useeffect") {
+		t.Errorf("expected App.jsx to use useEffect for persistence, got: %s", string(appJSX))
+	}
+}
 
-	appTSX, err := os.ReadFile(appPath)
-	if err != nil {
-		t.Fatalf("expected %s to be created, got error: %v", appPath, err)
+func localWorkDir(t *testing.T) string {
+	t.Helper()
+	cwd, _ := os.Getwd()
+	root := findRepoRootForTest(cwd)
+	if root == "" {
+		t.Fatalf("failed to locate repo root from %s", cwd)
 	}
-	// Keep assertions flexible to avoid brittleness across model outputs.
-	if !strings.Contains(strings.ToLower(string(appTSX)), "say") {
-		t.Errorf("expected App.tsx to contain 'say', got: %s", string(appTSX))
+	name := strings.NewReplacer("/", "_", "\\", "_", " ", "_", ":", "_").Replace(t.Name())
+	runID := time.Now().Format("20060102-150405.000000000")
+	dir := filepath.Join(root, ".local", "test-artifacts", "s01", name, runID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("failed to create work dir: %v", err)
 	}
-	// Must be a controlled input bound to some name state.
-	if !strings.Contains(string(appTSX), "useState") {
-		t.Errorf("expected App.tsx to use state for name input, got: %s", string(appTSX))
-	}
-	if !strings.Contains(string(appTSX), "value={") || !strings.Contains(string(appTSX), "onChange") {
-		t.Errorf("expected App.tsx to use a controlled input (value + onChange), got: %s", string(appTSX))
-	}
+	return dir
 }

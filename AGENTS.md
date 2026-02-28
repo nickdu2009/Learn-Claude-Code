@@ -64,8 +64,17 @@ AI_SDK_DEVTOOLS_PORT=4983
 ## 安全与隐私（必须遵守）
 
 - **不要提交敏感信息**：`.env`、API Key、token、私有 endpoint、真实用户数据等。
-- **注意明文落盘**：DevTools 追踪数据（默认 `.devtools/generations.json`，或由 `AI_SDK_DEVTOOLS_DIR` 指定）可能包含 prompts / 工具参数 / 工具输出等明文内容，仅建议本地使用；如需在 CI/共享环境使用，先评估脱敏与访问控制。
-- **测试数据专用目录**：测试运行产生的落盘数据必须写入 `.local/`（例如 `.local/test-artifacts/`），且 `.local/` 必须在 `.gitignore` 中被忽略，禁止提交。
+- **注意明文落盘**：DevTools 追踪数据（默认写入仓库根目录下的 `.devtools/generations.json`，也可通过 `AI_SDK_DEVTOOLS_DIR` 指定）可能包含 prompts / 工具参数 / 工具输出等明文内容，仅建议本地使用；如需在 CI/共享环境使用，先评估脱敏与访问控制。
+- **测试数据专用目录**：测试运行中 test case 产生的任何落盘数据必须写入 `.local/`（例如 `.local/test-artifacts/`），且 `.local/` 必须在 `.gitignore` 中被忽略，禁止提交。
+- **测试写文件的硬性规则**：
+  - **禁止写入源码目录**：测试（以及被测试的 Agent/Tools）不得在 `agents/`、`pkg/`、仓库根目录等源码区域创建/覆盖文件（包括误写 `hello.txt` 之类的产物）。
+  - **统一写入路径**：凡是测试中会“写文件/建目录”的行为（例如 `write_file`、`bash` 创建项目文件、生成中间产物），工作目录必须指向仓库根目录下的 `.local/test-artifacts/<session>/<real|fake>/<testname>/<run-id>/`。
+    - `run-id` 必须能区分每次执行（推荐时间戳），以便**保留每次集成测试的完整产物**用于回放与对比。
+  - **禁止自动清理产物**：集成测试默认**不要**用 `t.Cleanup` 删除 `.local/test-artifacts/...` 目录；需要清理时由开发者手动删除（或另写专门的清理脚本/命令）。
+  - **DevTools 与测试产物分离**：DevTools 追踪文件只允许写入仓库根目录下的 `.devtools/`（测试中可在 `TestMain` 设置 `AI_SDK_DEVTOOLS_DIR=<repo>/.devtools`），**不得写入 `.local/`**。
+- **真实测试用例（Prompt Fixture）规范**：
+  - **以 Markdown 存储**：真实/通用测试 case 的需求文本应保存为 `pkg/testcases/*.md`。
+  - **以 embed 读取**：测试与代码读取这类 fixture 时优先使用 `go:embed`，避免依赖 repo root 搜索或运行时文件路径导致的不稳定。
 - **最小权限原则**：新增外部依赖或脚本前，优先评估安全影响与维护成本。
 
 ## 新增/修改 Session 的 checklist
