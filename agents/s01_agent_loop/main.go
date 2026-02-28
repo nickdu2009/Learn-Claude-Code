@@ -28,11 +28,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
@@ -80,6 +83,9 @@ func main() {
 	cwd, _ := os.Getwd()
 	system := fmt.Sprintf("You are a coding agent at %s. Use bash to solve tasks. Act, don't explain.", cwd)
 
+	// DevTools recorder: keep one run for the whole REPL session
+	rec := devtools.NewRunRecorderFromEnv()
+
 	// 持久化对话历史，跨轮次保留上下文
 	history := []openai.ChatCompletionMessageParamUnion{}
 
@@ -95,7 +101,7 @@ func main() {
 		}
 
 		history = append(history, openai.UserMessage(query))
-		history = agentLoop(llm, system, history)
+		history = agentLoop(llm, system, history, "", rec)
 
 		// 打印最终回复
 		last := history[len(history)-1]
@@ -120,11 +126,18 @@ func agentLoop(
 	llm LLMClient,
 	system string,
 	messages []openai.ChatCompletionMessageParamUnion,
-	workDir ...string,
+	workDir string,
+	rec *devtools.RunRecorder,
 ) []openai.ChatCompletionMessageParamUnion {
+	provider := inferProviderFromEnv()
+	modelID := ""
+	if r, ok := llm.(*realLLMClient); ok {
+		modelID = r.model
+	}
+
 	cwd := ""
-	if len(workDir) > 0 && workDir[0] != "" {
-		cwd = workDir[0]
+	if workDir != "" {
+		cwd = workDir
 	}
 
 	for {
@@ -133,17 +146,34 @@ func agentLoop(
 			openai.SystemMessage(system),
 		}, messages...)
 
-		resp, err := llm.Complete(context.Background(), openai.ChatCompletionNewParams{
+		stepID, start := "", time.Time{}
+		if rec != nil {
+			stepID, start = rec.StartStep(context.Background(), "generate", modelID, provider, fullMessages, []openai.ChatCompletionToolParam{bashToolDef()}, map[string]any{
+				"baseURL": os.Getenv("DASHSCOPE_BASE_URL"),
+			})
+		}
+
+		params := openai.ChatCompletionNewParams{
 			Messages: fullMessages,
 			Tools:    []openai.ChatCompletionToolParam{bashToolDef()},
-		})
+		}
+		resp, err := llm.Complete(context.Background(), params)
 		if err != nil {
+			if rec != nil {
+				rec.FinishStep(context.Background(), stepID, start, nil, nil, err, params, nil, nil)
+			}
 			fmt.Fprintln(os.Stderr, "API error:", err)
 			return messages
 		}
 
 		choice := resp.Choices[0]
 		messages = append(messages, choice.Message.ToParam())
+
+		if rec != nil {
+			output := buildViewerOutput(choice.FinishReason, choice.Message)
+			usage := buildViewerUsage(resp)
+			rec.FinishStep(context.Background(), stepID, start, output, usage, nil, params, resp, nil)
+		}
 
 		// 没有工具调用时，模型返回最终文本，循环结束
 		if choice.FinishReason != "tool_calls" {
@@ -152,6 +182,9 @@ func agentLoop(
 
 		// 执行每个工具调用，收集结果
 		for _, tc := range choice.Message.ToolCalls {
+			if rec != nil {
+				rec.RegisterToolCall(tc.ID, tc.Function.Name)
+			}
 			var args map[string]any
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 				messages = append(messages, openai.ToolMessage(fmt.Sprintf("error: %s", err), tc.ID))
@@ -171,6 +204,77 @@ func agentLoop(
 			messages = append(messages, openai.ToolMessage(output, tc.ID))
 		}
 	}
+}
+
+func inferProviderFromEnv() string {
+	baseURL := os.Getenv("DASHSCOPE_BASE_URL")
+	if baseURL == "" {
+		return ""
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(u.Host)
+	switch {
+	case strings.Contains(host, "dashscope"):
+		return "dashscope"
+	case strings.Contains(host, "aliyun"):
+		return "aliyun"
+	default:
+		if host != "" {
+			return host
+		}
+		return ""
+	}
+}
+
+func buildViewerUsage(resp *openai.ChatCompletion) any {
+	if resp == nil || (resp.Usage.PromptTokens == 0 && resp.Usage.CompletionTokens == 0 && resp.Usage.TotalTokens == 0) {
+		return nil
+	}
+	return map[string]any{
+		"inputTokens":  resp.Usage.PromptTokens,
+		"outputTokens": resp.Usage.CompletionTokens,
+		"totalTokens":  resp.Usage.TotalTokens,
+		"raw":          resp.Usage,
+	}
+}
+
+func buildViewerOutput(finishReason string, msg openai.ChatCompletionMessage) any {
+	fr := finishReason
+	if fr == "tool_calls" {
+		fr = "tool-calls"
+	}
+
+	parts := make([]map[string]any, 0, 4)
+	if strings.TrimSpace(msg.Content) != "" {
+		parts = append(parts, map[string]any{
+			"type": "text",
+			"text": msg.Content,
+		})
+	}
+
+	toolCalls := make([]map[string]any, 0, len(msg.ToolCalls))
+	for _, tc := range msg.ToolCalls {
+		call := map[string]any{
+			"type":       "tool-call",
+			"toolName":   tc.Function.Name,
+			"toolCallId": tc.ID,
+			"args":       tc.Function.Arguments,
+		}
+		toolCalls = append(toolCalls, call)
+		parts = append(parts, call)
+	}
+
+	out := map[string]any{
+		"finishReason": fr,
+		"content":      parts,
+	}
+	if len(toolCalls) > 0 {
+		out["toolCalls"] = toolCalls
+	}
+	return out
 }
 
 // runBash 执行 shell 命令，工作目录为当前进程目录。

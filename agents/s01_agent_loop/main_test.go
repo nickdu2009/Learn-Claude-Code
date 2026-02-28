@@ -194,7 +194,7 @@ func TestAgentLoop_DirectTextResponse(t *testing.T) {
 		openai.UserMessage("say hello"),
 	}
 
-	result := agentLoop(llm, "system prompt", messages)
+	result := agentLoop(llm, "system prompt", messages, "", nil)
 
 	if llm.calls != 1 {
 		t.Errorf("expected 1 LLM call, got %d", llm.calls)
@@ -221,7 +221,7 @@ func TestAgentLoop_OneToolCallThenText(t *testing.T) {
 		openai.UserMessage("run echo hello"),
 	}
 
-	result := agentLoop(llm, "system prompt", messages)
+	result := agentLoop(llm, "system prompt", messages, "", nil)
 
 	if llm.calls != 2 {
 		t.Errorf("expected 2 LLM calls, got %d", llm.calls)
@@ -246,7 +246,7 @@ func TestAgentLoop_MultipleToolCallsThenText(t *testing.T) {
 		openai.UserMessage("do two steps"),
 	}
 
-	result := agentLoop(llm, "system prompt", messages)
+	result := agentLoop(llm, "system prompt", messages, "", nil)
 
 	if llm.calls != 3 {
 		t.Errorf("expected 3 LLM calls, got %d", llm.calls)
@@ -270,7 +270,7 @@ func TestAgentLoop_ToolCallWithDangerousCommand(t *testing.T) {
 		openai.UserMessage("try dangerous command"),
 	}
 
-	result := agentLoop(llm, "system prompt", messages)
+	result := agentLoop(llm, "system prompt", messages, "", nil)
 
 	if llm.calls != 2 {
 		t.Errorf("expected 2 LLM calls, got %d", llm.calls)
@@ -320,7 +320,7 @@ func TestAgentLoop_ToolCallWithInvalidJSON(t *testing.T) {
 		openai.UserMessage("trigger bad json"),
 	}
 
-	result := agentLoop(llm, "system prompt", messages)
+	result := agentLoop(llm, "system prompt", messages, "", nil)
 
 	if llm.calls != 2 {
 		t.Errorf("expected 2 LLM calls, got %d", llm.calls)
@@ -344,7 +344,7 @@ func TestAgentLoop_APIError_ReturnsOriginalMessages(t *testing.T) {
 		openai.UserMessage("trigger error"),
 	}
 
-	result := agentLoop(llm, "system prompt", messages)
+	result := agentLoop(llm, "system prompt", messages, "", nil)
 
 	// 出错时返回原始消息，不追加任何内容
 	if len(result) != 1 {
@@ -357,7 +357,7 @@ func TestAgentLoop_SystemPromptPrepended(t *testing.T) {
 	var capturedMessages []openai.ChatCompletionMessageParamUnion
 
 	captureLLM := &capturingLLMClient{
-		capture: &capturedMessages,
+		capture:  &capturedMessages,
 		response: makeTextResponse("ok"),
 	}
 
@@ -365,7 +365,7 @@ func TestAgentLoop_SystemPromptPrepended(t *testing.T) {
 		openai.UserMessage("hello"),
 	}
 
-	agentLoop(captureLLM, "test-system-prompt", messages)
+	agentLoop(captureLLM, "test-system-prompt", messages, "", nil)
 
 	if len(capturedMessages) == 0 {
 		t.Fatal("no messages captured")

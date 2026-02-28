@@ -150,6 +150,9 @@ cp .env.example .env
 #   DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1  # 必填
 #   DASHSCOPE_MODEL=qwen-plus                                              # 可选，默认 qwen-plus
 
+# （可选）启动本地 DevTools Viewer（追踪 LLM 与工具调用）
+./scripts/devtools-viewer.sh
+
 # 运行第一个 Session
 go run ./agents/s01_agent_loop/
 ```
@@ -177,6 +180,9 @@ go run ./agents/s01_agent_loop/
 | `DASHSCOPE_API_KEY` | ✅ | — | 阿里云灵积平台 API Key |
 | `DASHSCOPE_BASE_URL` | ✅ | — | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 | `DASHSCOPE_MODEL` | ❌ | `qwen-plus` | 模型名称，可选值见下表 |
+| `AI_SDK_DEVTOOLS` | ❌ | （空） | 本地 DevTools 开关：`1/true/yes/on` 启用，会将交互写入 `.devtools/generations.json`（明文） |
+| `AI_SDK_DEVTOOLS_PORT` | ❌ | `4983` | DevTools viewer 端口（需与 viewer 启动端口一致） |
+| `AI_SDK_DEVTOOLS_VERSION` | ❌ | `0.0.15` | DevTools viewer npm 包版本（仅 `scripts/devtools-viewer.sh` 使用） |
 
 **可选模型：**
 
@@ -210,6 +216,40 @@ resp, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 ```
 
 > 通义千问兼容 OpenAI 的 `tool_calls` / `function_calling` 协议，Agent 循环的核心逻辑无需改动。
+
+---
+
+## 本地 DevTools（LLM + Tools 追踪）
+
+本仓库提供了一个轻量的本地追踪实现，**直接生成与 `@ai-sdk/devtools` viewer 兼容的数据文件**，用于可视化查看：
+- 每次 LLM 调用（输入/输出/耗时/usage）
+- 工具调用（tool-call）与工具结果（tool-result）
+- 多步循环的完整 Run/Step 链路
+
+### 启动 viewer
+
+```bash
+./scripts/devtools-viewer.sh
+```
+
+默认地址：`http://localhost:4983`
+
+### 启用记录
+
+在 `.env` 中设置：
+
+```bash
+AI_SDK_DEVTOOLS=1
+AI_SDK_DEVTOOLS_PORT=4983
+```
+
+然后运行任意 agent（例如 s01）：
+
+```bash
+go run ./agents/s01_agent_loop/
+```
+
+> 注意：`.devtools/generations.json` 为**明文落盘**（包含 prompts / 工具参数 / 工具输出等），仅建议本地开发使用，避免处理敏感数据。
 
 ---
 
@@ -254,6 +294,17 @@ DASHSCOPE_MODEL=qwen-turbo go run ./agents/s01_agent_loop/
 ```
 
 或直接修改 `.env` 中的 `DASHSCOPE_MODEL`。
+
+---
+
+**Q：如何追踪 LLM 调用和工具调用？**
+
+1. 启动 viewer：`./scripts/devtools-viewer.sh`
+2. 在 `.env` 启用：`AI_SDK_DEVTOOLS=1`
+3. 运行 agent：`go run ./agents/s01_agent_loop/`
+4. 打开 `http://localhost:4983` 查看 Run/Step
+
+> 如果页面不刷新，确认 `AI_SDK_DEVTOOLS_PORT` 与 viewer 端口一致，且本地 4983 端口未被占用。
 
 ---
 

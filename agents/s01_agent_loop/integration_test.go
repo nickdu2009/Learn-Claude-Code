@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
 	"github.com/openai/openai-go"
 )
 
@@ -45,7 +46,8 @@ func runAgent(t *testing.T, llm LLMClient, system, prompt, workDir string) (stri
 	messages := []openai.ChatCompletionMessageParamUnion{
 		openai.UserMessage(prompt),
 	}
-	result := agentLoop(llm, system, messages, workDir)
+	rec := devtools.NewRunRecorderFromEnv()
+	result := agentLoop(llm, system, messages, workDir, rec)
 
 	// 提取最终文本回复
 	last := result[len(result)-1]
@@ -181,11 +183,12 @@ func TestIntegration_MultiRound(t *testing.T) {
 	history := []openai.ChatCompletionMessageParamUnion{
 		openai.UserMessage("Create a file named memo.txt with content: round_one"),
 	}
-	history = agentLoop(llm, system, history, tmpDir)
+	rec := devtools.NewRunRecorderFromEnv()
+	history = agentLoop(llm, system, history, tmpDir, rec)
 
 	// 第二轮：基于上下文追加内容（Agent 应记得 memo.txt）
 	history = append(history, openai.UserMessage("Append the text ' round_two' to memo.txt"))
-	history = agentLoop(llm, system, history, tmpDir)
+	history = agentLoop(llm, system, history, tmpDir, rec)
 
 	// 验证文件包含两轮内容
 	content, err := os.ReadFile(filepath.Join(tmpDir, "memo.txt"))
@@ -199,5 +202,82 @@ func TestIntegration_MultiRound(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "round_two") {
 		t.Errorf("expected 'round_two' in file after second round, got: %q", string(content))
+	}
+}
+
+// TestIntegration_ReactViteProject 验证 Agent 能生成一个 React + Vite 前端项目（仅写文件，不安装依赖），
+// 页面包含输入 name，并展示 "say {name}"。
+func TestIntegration_ReactViteProject(t *testing.T) {
+	skipIfNoAPIKey(t)
+
+	tmpDir := t.TempDir()
+	system := "You are a coding agent at " + tmpDir + ". Use bash to solve tasks. Act, don't explain."
+	llm, _ := newRealAgent(t)
+
+	prompt := strings.Join([]string{
+		"Create a new frontend project under a folder named 'frontend' in the current directory.",
+		"It must be a React + Vite project (TypeScript).",
+		"Do NOT run npm install, pnpm install, yarn install, or any network/download commands. Just create the files.",
+		"Requirements:",
+		"- package.json with scripts: dev, build, preview and dependencies including react, react-dom; devDependencies including vite, typescript, @vitejs/plugin-react",
+		"- index.html with a #root element",
+		"- src/main.tsx mounting <App /> to #root",
+		"- src/App.tsx: render an input for name (controlled component), and below it render text exactly in the form: \"say <name>\" (if empty, show \"say \" with empty name is OK).",
+		"- minimal vite.config.ts and tsconfig.json so it's a standard Vite React TS template.",
+	}, "\n")
+
+	reply, _ := runAgent(t, llm, system, prompt, tmpDir)
+	t.Logf("Agent reply: %s", reply)
+
+	// Verify key files exist
+	frontendDir := filepath.Join(tmpDir, "frontend")
+	pkgJSONPath := filepath.Join(frontendDir, "package.json")
+	appPath := filepath.Join(frontendDir, "src", "App.tsx")
+	mainPath := filepath.Join(frontendDir, "src", "main.tsx")
+	indexPath := filepath.Join(frontendDir, "index.html")
+
+	pkgJSON, err := os.ReadFile(pkgJSONPath)
+	if err != nil {
+		t.Fatalf("expected %s to be created, got error: %v", pkgJSONPath, err)
+	}
+	if !strings.Contains(string(pkgJSON), "\"vite\"") || !strings.Contains(string(pkgJSON), "\"react\"") {
+		t.Errorf("expected package.json to include vite and react, got: %s", string(pkgJSON))
+	}
+	if !strings.Contains(string(pkgJSON), "\"dev\"") || !strings.Contains(string(pkgJSON), "\"build\"") || !strings.Contains(string(pkgJSON), "\"preview\"") {
+		t.Errorf("expected package.json scripts to include dev/build/preview, got: %s", string(pkgJSON))
+	}
+
+	indexHTML, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("expected %s to be created, got error: %v", indexPath, err)
+	}
+	// Models sometimes generate escaped quotes (id=\"root\"). Normalize for robustness.
+	indexNormalized := strings.ReplaceAll(string(indexHTML), `\"`, `"`)
+	if !strings.Contains(indexNormalized, `id="root"`) {
+		t.Errorf("expected index.html to contain #root, got: %s", string(indexHTML))
+	}
+
+	mainTSX, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatalf("expected %s to be created, got error: %v", mainPath, err)
+	}
+	if !strings.Contains(string(mainTSX), "createRoot") && !strings.Contains(string(mainTSX), "ReactDOM") {
+		t.Errorf("expected main.tsx to mount app to root, got: %s", string(mainTSX))
+	}
+
+	appTSX, err := os.ReadFile(appPath)
+	if err != nil {
+		t.Fatalf("expected %s to be created, got error: %v", appPath, err)
+	}
+	// Keep assertions flexible to avoid brittleness across model outputs.
+	if !strings.Contains(strings.ToLower(string(appTSX)), "say") {
+		t.Errorf("expected App.tsx to contain 'say', got: %s", string(appTSX))
+	}
+	// Must be a controlled input bound to some name state.
+	if !strings.Contains(string(appTSX), "useState") {
+		t.Errorf("expected App.tsx to use state for name input, got: %s", string(appTSX))
+	}
+	if !strings.Contains(string(appTSX), "value={") || !strings.Contains(string(appTSX), "onChange") {
+		t.Errorf("expected App.tsx to use a controlled input (value + onChange), got: %s", string(appTSX))
 	}
 }
