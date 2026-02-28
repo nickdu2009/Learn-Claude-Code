@@ -76,6 +76,9 @@ type RunRecorder struct {
 // Env:
 // - AI_SDK_DEVTOOLS: 1/true/yes/on to enable
 // - AI_SDK_DEVTOOLS_PORT: viewer port (default 4983)
+// - AI_SDK_DEVTOOLS_DIR: directory to write generations.json into
+//   - if absolute: used as-is
+//   - if relative: resolved under the git root
 func NewRunRecorderFromEnv() *RunRecorder {
 	if !envTruthy("AI_SDK_DEVTOOLS") {
 		return nil
@@ -88,7 +91,15 @@ func NewRunRecorderFromEnv() *RunRecorder {
 	}
 	cwd, _ := os.Getwd()
 	root := findGitRoot(cwd)
+
 	dbDir := filepath.Join(root, ".devtools")
+	if v := strings.TrimSpace(os.Getenv("AI_SDK_DEVTOOLS_DIR")); v != "" {
+		if filepath.IsAbs(v) {
+			dbDir = filepath.Clean(v)
+		} else {
+			dbDir = filepath.Join(root, filepath.Clean(v))
+		}
+	}
 	return &RunRecorder{
 		enabled:          true,
 		runID:            generateRunID(),
@@ -328,7 +339,7 @@ func (r *RunRecorder) writeDBLocked(db database) error {
 	if err := os.MkdirAll(r.dbDir, 0o755); err != nil {
 		return err
 	}
-	ensureGitignore()
+	ensureGitignoreForDir(r.dbDir)
 	b, err := json.MarshalIndent(db, "", "  ")
 	if err != nil {
 		return err
@@ -336,9 +347,28 @@ func (r *RunRecorder) writeDBLocked(db database) error {
 	return os.WriteFile(r.dbPath, b, 0o644)
 }
 
-func ensureGitignore() {
-	// Keep behavior simple: write to the git root where the recorder stores .devtools.
+func ensureGitignoreForDir(dbDir string) {
+	dbDir = strings.TrimSpace(dbDir)
+	if dbDir == "" {
+		return
+	}
+
+	// Only touch .gitignore when dbDir is inside the repo.
 	root := findGitRoot(".")
+	rel, err := filepath.Rel(root, dbDir)
+	if err != nil {
+		return
+	}
+	rel = filepath.Clean(rel)
+	if rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return
+	}
+
+	ignoreEntry := filepath.ToSlash(rel)
+	if !strings.HasSuffix(ignoreEntry, "/") {
+		ignoreEntry += "/"
+	}
+
 	gitignorePath := filepath.Join(root, ".gitignore")
 	b, err := os.ReadFile(gitignorePath)
 	if err != nil {
@@ -347,7 +377,7 @@ func ensureGitignore() {
 	lines := strings.Split(string(b), "\n")
 	for _, ln := range lines {
 		t := strings.TrimSpace(ln)
-		if t == ".devtools" || t == ".devtools/" {
+		if t == ignoreEntry || t == strings.TrimSuffix(ignoreEntry, "/") {
 			return
 		}
 	}
@@ -356,7 +386,8 @@ func ensureGitignore() {
 	if len(b) > 0 && b[len(b)-1] != '\n' {
 		buf.WriteByte('\n')
 	}
-	buf.WriteString(".devtools\n")
+	buf.WriteString(ignoreEntry)
+	buf.WriteByte('\n')
 	_ = os.WriteFile(gitignorePath, buf.Bytes(), 0o644)
 }
 

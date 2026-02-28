@@ -20,6 +20,46 @@ import (
 	"github.com/openai/openai-go"
 )
 
+func TestMain(m *testing.M) {
+	// Force test-generated devtools data into a dedicated, git-ignored directory.
+	// If the repo root can't be located, fall back to OS temp dir.
+	cwd, _ := os.Getwd()
+	root := findRepoRootForTest(cwd)
+	var artifactsRoot string
+	if root != "" {
+		artifactsRoot = filepath.Join(root, ".local", "test-artifacts", "devtools")
+	} else {
+		artifactsRoot = filepath.Join(os.TempDir(), "learn-claude-code", "test-artifacts", "devtools")
+	}
+	_ = os.MkdirAll(artifactsRoot, 0o755)
+	_ = os.Setenv("AI_SDK_DEVTOOLS_DIR", artifactsRoot)
+
+	code := m.Run()
+
+	// Keep the workspace clean; data is not meant to be committed.
+	_ = os.RemoveAll(filepath.Dir(filepath.Dir(artifactsRoot))) // .../test-artifacts
+	os.Exit(code)
+}
+
+func findRepoRootForTest(start string) string {
+	dir := start
+	for {
+		if dir == "" || dir == string(filepath.Separator) {
+			return ""
+		}
+		if fi, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			if fi.IsDir() || fi.Mode().IsRegular() {
+				return dir
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
 // skipIfNoAPIKey 在没有真实 API Key 时跳过集成测试。
 func skipIfNoAPIKey(t *testing.T) {
 	t.Helper()
