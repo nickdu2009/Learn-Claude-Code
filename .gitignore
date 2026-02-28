@@ -1,1 +1,15 @@
 .env
+
+# 编译产物
+agents/s01_agent_loop/s01_agent_loop
+agents/s02_tool_use/s02_tool_use
+agents/s03_todo_write/s03_todo_write
+agents/s04_subagent/s04_subagent
+agents/s05_skill_loading/s05_skill_loading
+agents/s06_context_compact/s06_context_compact
+agents/s07_task_system/s07_task_system
+agents/s08_background_tasks/s08_background_tasks
+agents/s09_agent_teams/s09_agent_teams
+agents/s10_team_protocols/s10_team_protocols
+agents/s11_autonomous_agents/s11_autonomous_agents
+agents/s12_worktree_isolation/s12_worktree_isolation
