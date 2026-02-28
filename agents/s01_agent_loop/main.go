@@ -1,62 +1,180 @@
 // s01: The Agent Loop
 // Motto: "One loop & Bash is all you need"
 //
-// 最小 Agent：一个工具（bash）+ 一个循环。
-// 演示核心 Agent 模式：调用 LLM → 检测 tool_calls → 执行工具 → 追加结果 → 循环。
+// The entire secret of an AI coding agent in one pattern:
+//
+//	for stop_reason == "tool_calls" {
+//	    response = LLM(messages, tools)
+//	    execute tools
+//	    append results
+//	}
+//
+// +----------+    +-------+    +---------+
+// | User     | -> | LLM   | -> | Tool    |
+// | prompt   |    |       |    | execute |
+// +----------+    +---+---+    +----+----+
+//
+//	^              |
+//	| tool_result  |
+//	+--------------+
+//	  (loop continues)
+//
+// This is the core loop: feed tool results back to the model
+// until the model decides to stop.
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
-	"log"
+	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/joho/godotenv"
-	"github.com/nickdu2009/learn-claude-code/pkg/loop"
-	"github.com/nickdu2009/learn-claude-code/pkg/qwen"
-	"github.com/nickdu2009/learn-claude-code/pkg/tools"
 	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
 )
 
+// ANSI 颜色码
+const (
+	colorCyan   = "\033[36m"
+	colorYellow = "\033[33m"
+	colorReset  = "\033[0m"
+)
+
+var dangerousPatterns = []string{
+	"rm -rf /", "sudo", "shutdown", "reboot", "> /dev/",
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
-		log.Println("no .env file found, using system env")
+		fmt.Fprintln(os.Stderr, "no .env file found, using system env")
 	}
 
-	client, err := qwen.NewClient()
+	client, err := newClient()
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
 	}
 
-	registry := tools.New()
-	registry.Register(bashToolDef(), bashHandler)
+	model := getModel()
+	cwd, _ := os.Getwd()
+	system := fmt.Sprintf("You are a coding agent at %s. Use bash to solve tasks. Act, don't explain.", cwd)
 
-	messages := []openai.ChatCompletionMessageParamUnion{
-		openai.SystemMessage("You are a helpful assistant. Use the bash tool to execute shell commands when needed."),
-		openai.UserMessage("What is the current directory and list its files?"),
-	}
+	// 持久化对话历史，跨轮次保留上下文
+	history := []openai.ChatCompletionMessageParamUnion{}
 
-	messages, err = loop.Run(context.Background(), client, qwen.Model(), messages, registry)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// 打印最终回复
-	last := messages[len(messages)-1]
-	if last.OfAssistant != nil {
-		content := last.OfAssistant.Content
-		// 纯文本内容
-		if content.OfString.Value != "" {
-			fmt.Println(content.OfString.Value)
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Printf("%ss01 >> %s", colorCyan, colorReset)
+		if !scanner.Scan() {
+			break
 		}
-		// 多部分内容
-		for _, part := range content.OfArrayOfContentParts {
-			if part.OfText != nil {
-				fmt.Println(part.OfText.Text)
+		query := strings.TrimSpace(scanner.Text())
+		if query == "" || query == "q" || query == "exit" {
+			break
+		}
+
+		history = append(history, openai.UserMessage(query))
+		history = agentLoop(client, model, system, history)
+
+		// 打印最终回复
+		last := history[len(history)-1]
+		if last.OfAssistant != nil {
+			content := last.OfAssistant.Content
+			if content.OfString.Value != "" {
+				fmt.Println(content.OfString.Value)
+			}
+			for _, part := range content.OfArrayOfContentParts {
+				if part.OfText != nil {
+					fmt.Println(part.OfText.Text)
+				}
 			}
 		}
+		fmt.Println()
 	}
+}
+
+// agentLoop 是核心循环：调用 LLM → 检测 tool_calls → 执行工具 → 追加结果 → 循环。
+func agentLoop(
+	client *openai.Client,
+	model, system string,
+	messages []openai.ChatCompletionMessageParamUnion,
+) []openai.ChatCompletionMessageParamUnion {
+	for {
+		// system prompt 作为首条消息传入（OpenAI 协议）
+		fullMessages := append([]openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage(system),
+		}, messages...)
+
+		resp, err := client.Chat.Completions.New(context.Background(), openai.ChatCompletionNewParams{
+			Model:    shared.ChatModel(model),
+			Messages: fullMessages,
+			Tools:    []openai.ChatCompletionToolParam{bashToolDef()},
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "API error:", err)
+			return messages
+		}
+
+		choice := resp.Choices[0]
+		messages = append(messages, choice.Message.ToParam())
+
+		// 没有工具调用时，模型返回最终文本，循环结束
+		if choice.FinishReason != "tool_calls" {
+			return messages
+		}
+
+		// 执行每个工具调用，收集结果
+		for _, tc := range choice.Message.ToolCalls {
+			var args map[string]any
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				messages = append(messages, openai.ToolMessage(fmt.Sprintf("error: %s", err), tc.ID))
+				continue
+			}
+
+			command, _ := args["command"].(string)
+			fmt.Printf("%s$ %s%s\n", colorYellow, command, colorReset)
+
+			output := runBash(command)
+			preview := output
+			if len(preview) > 200 {
+				preview = preview[:200]
+			}
+			fmt.Println(preview)
+
+			messages = append(messages, openai.ToolMessage(output, tc.ID))
+		}
+	}
+}
+
+// runBash 执行 shell 命令，拦截危险指令，限制输出长度。
+func runBash(command string) string {
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(command, pattern) {
+			return "Error: Dangerous command blocked"
+		}
+	}
+
+	cmd := exec.Command("bash", "-c", command)
+	cmd.Dir, _ = os.Getwd()
+	out, err := cmd.CombinedOutput()
+
+	result := strings.TrimSpace(string(out))
+	if err != nil && result == "" {
+		result = fmt.Sprintf("Error: %s", err)
+	}
+	if result == "" {
+		result = "(no output)"
+	}
+	// 截断超长输出，防止撑爆上下文
+	if len(result) > 50000 {
+		result = result[:50000]
+	}
+	return result
 }
 
 func bashToolDef() openai.ChatCompletionToolParam {
@@ -64,14 +182,11 @@ func bashToolDef() openai.ChatCompletionToolParam {
 		Type: "function",
 		Function: shared.FunctionDefinitionParam{
 			Name:        "bash",
-			Description: openai.String("Execute a bash command and return its output."),
+			Description: openai.String("Run a shell command."),
 			Parameters: openai.FunctionParameters{
 				"type": "object",
 				"properties": map[string]any{
-					"command": map[string]any{
-						"type":        "string",
-						"description": "The bash command to execute.",
-					},
+					"command": map[string]any{"type": "string"},
 				},
 				"required": []string{"command"},
 			},
@@ -79,20 +194,25 @@ func bashToolDef() openai.ChatCompletionToolParam {
 	}
 }
 
-func bashHandler(args map[string]any) (string, error) {
-	command, ok := args["command"].(string)
-	if !ok {
-		return "", fmt.Errorf("command must be a string")
+func newClient() (*openai.Client, error) {
+	apiKey := os.Getenv("DASHSCOPE_API_KEY")
+	if apiKey == "" {
+		return nil, fmt.Errorf("DASHSCOPE_API_KEY is not set")
 	}
+	baseURL := os.Getenv("DASHSCOPE_BASE_URL")
+	if baseURL == "" {
+		return nil, fmt.Errorf("DASHSCOPE_BASE_URL is not set")
+	}
+	c := openai.NewClient(
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(baseURL),
+	)
+	return &c, nil
+}
 
-	out, err := exec.Command("bash", "-c", command).CombinedOutput()
-	if err != nil {
-		return fmt.Sprintf("exit error: %s\n%s", err, out), nil
+func getModel() string {
+	if m := os.Getenv("DASHSCOPE_MODEL"); m != "" {
+		return m
 	}
-
-	result := string(out)
-	if len(result) > 4000 {
-		result = result[:4000] + "\n...(truncated)"
-	}
-	return result, nil
+	return "qwen-plus"
 }
