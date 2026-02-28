@@ -49,6 +49,22 @@ var dangerousPatterns = []string{
 	"rm -rf /", "sudo", "shutdown", "reboot", "> /dev/",
 }
 
+// LLMClient 抽象 LLM 调用，便于单元测试时注入 mock。
+type LLMClient interface {
+	Complete(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error)
+}
+
+// realLLMClient 包装真实的 openai.Client。
+type realLLMClient struct {
+	client *openai.Client
+	model  string
+}
+
+func (r *realLLMClient) Complete(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
+	params.Model = shared.ChatModel(r.model)
+	return r.client.Chat.Completions.New(ctx, params)
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		fmt.Fprintln(os.Stderr, "no .env file found, using system env")
@@ -60,7 +76,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	model := getModel()
+	llm := &realLLMClient{client: client, model: getModel()}
 	cwd, _ := os.Getwd()
 	system := fmt.Sprintf("You are a coding agent at %s. Use bash to solve tasks. Act, don't explain.", cwd)
 
@@ -79,7 +95,7 @@ func main() {
 		}
 
 		history = append(history, openai.UserMessage(query))
-		history = agentLoop(client, model, system, history)
+		history = agentLoop(llm, system, history)
 
 		// 打印最终回复
 		last := history[len(history)-1]
@@ -100,8 +116,8 @@ func main() {
 
 // agentLoop 是核心循环：调用 LLM → 检测 tool_calls → 执行工具 → 追加结果 → 循环。
 func agentLoop(
-	client *openai.Client,
-	model, system string,
+	llm LLMClient,
+	system string,
 	messages []openai.ChatCompletionMessageParamUnion,
 ) []openai.ChatCompletionMessageParamUnion {
 	for {
@@ -110,8 +126,7 @@ func agentLoop(
 			openai.SystemMessage(system),
 		}, messages...)
 
-		resp, err := client.Chat.Completions.New(context.Background(), openai.ChatCompletionNewParams{
-			Model:    shared.ChatModel(model),
+		resp, err := llm.Complete(context.Background(), openai.ChatCompletionNewParams{
 			Messages: fullMessages,
 			Tools:    []openai.ChatCompletionToolParam{bashToolDef()},
 		})
