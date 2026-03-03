@@ -149,6 +149,11 @@ func (r *RunRecorder) EnsureRun(ctx context.Context) {
 }
 
 // StartStep writes an in-progress step entry (duration/output/usage are null).
+//
+// requestParams is optional (may be nil). When provided it must be an
+// openai.ChatCompletionNewParams value; sampling parameters (Temperature, TopP,
+// MaxTokens, MaxCompletionTokens, ToolChoice) are extracted and written into
+// the step input so the Viewer StepConfigBar can display them.
 func (r *RunRecorder) StartStep(
 	ctx context.Context,
 	stepType string,
@@ -157,6 +162,7 @@ func (r *RunRecorder) StartStep(
 	input any,
 	tools []openai.ChatCompletionToolParam,
 	providerOptions any,
+	requestParams ...openai.ChatCompletionNewParams,
 ) (stepID string, start time.Time) {
 	if r == nil || !r.enabled {
 		return "", time.Time{}
@@ -178,6 +184,10 @@ func (r *RunRecorder) StartStep(
 	}
 	if providerOptions != nil {
 		inputObj["providerOptions"] = providerOptions
+	}
+	// Merge sampling parameters into inputObj so Viewer StepConfigBar renders them.
+	if len(requestParams) > 0 {
+		mergeSamplingParams(inputObj, requestParams[0])
 	}
 
 	inputJSON := mustJSON(inputObj)
@@ -492,6 +502,12 @@ func buildToolsForViewer(defs []openai.ChatCompletionToolParam) []map[string]any
 // buildPromptForViewer accepts either:
 // - []openai.ChatCompletionMessageParamUnion
 // - any JSON-marshalable prompt already in AI SDK message format
+//
+// It normalises every message to the AI SDK viewer content-parts format so
+// the viewer never shows "Empty message":
+//
+//	assistant → content: [{type:"text",...}, {type:"tool-call",...}, {type:"reasoning",...}]
+//	tool      → content: [{type:"tool-result",...}]
 func buildPromptForViewer(input any, toolNameByCallID map[string]string) any {
 	switch v := input.(type) {
 	case []openai.ChatCompletionMessageParamUnion:
@@ -514,9 +530,13 @@ func buildPromptForViewer(input any, toolNameByCallID map[string]string) any {
 			}
 			role, _ := m["role"].(string)
 
-			// Record tool call names from assistant messages (tool_calls array)
-			// so later tool-result messages can resolve toolName.
+			// Normalise assistant messages from OpenAI wire format to AI SDK viewer format.
+			// OpenAI wire: { role, content: ""|[...], tool_calls: [{id, function:{name,arguments}}] }
+			// AI SDK:      { role, content: [{type:"text"}, {type:"tool-call"}, {type:"reasoning"}] }
 			if role == "assistant" {
+				contentParts := extractAssistantContentParts(m)
+
+				// Collect tool-call parts from OpenAI tool_calls array and register names.
 				if rawCalls, ok := m["tool_calls"].([]any); ok {
 					for _, rawCall := range rawCalls {
 						callObj, ok := rawCall.(map[string]any)
@@ -526,10 +546,32 @@ func buildPromptForViewer(input any, toolNameByCallID map[string]string) any {
 						callID, _ := callObj["id"].(string)
 						fnObj, _ := callObj["function"].(map[string]any)
 						fnName, _ := fnObj["name"].(string)
+						fnArgs, _ := fnObj["arguments"].(string)
+
 						if callID != "" && fnName != "" {
 							localToolNameByCallID[callID] = fnName
 						}
+
+						// arguments is a JSON string; parse to object so viewer renders structured args.
+						var parsedArgs any
+						if fnArgs != "" {
+							if err := json.Unmarshal([]byte(fnArgs), &parsedArgs); err != nil {
+								parsedArgs = fnArgs
+							}
+						}
+
+						contentParts = append(contentParts, map[string]any{
+							"type":       "tool-call",
+							"toolName":   fnName,
+							"toolCallId": callID,
+							"args":       parsedArgs,
+						})
 					}
+				}
+
+				m = map[string]any{
+					"role":    "assistant",
+					"content": contentParts,
 				}
 			}
 
@@ -539,17 +581,26 @@ func buildPromptForViewer(input any, toolNameByCallID map[string]string) any {
 				if strings.TrimSpace(toolName) == "" {
 					toolName = localToolNameByCallID[toolCallID]
 				}
-				result := m["content"]
-				m = map[string]any{
-					"role": "tool",
-					"content": []map[string]any{
-						{
-							"type":       "tool-result",
-							"toolName":   toolName,
-							"toolCallId": toolCallID,
-							"result":     result,
+
+				// If content is already an array of tool-result parts, keep it as-is.
+				if parts, ok := m["content"].([]any); ok && isToolResultParts(parts) {
+					m = map[string]any{
+						"role":    "tool",
+						"content": parts,
+					}
+				} else {
+					result := m["content"]
+					m = map[string]any{
+						"role": "tool",
+						"content": []map[string]any{
+							{
+								"type":       "tool-result",
+								"toolName":   toolName,
+								"toolCallId": toolCallID,
+								"result":     result,
+							},
 						},
-					},
+					}
 				}
 			}
 			prompt = append(prompt, m)
@@ -558,6 +609,116 @@ func buildPromptForViewer(input any, toolNameByCallID map[string]string) any {
 	default:
 		return input
 	}
+}
+
+// extractAssistantContentParts converts the OpenAI content field of an assistant
+// message into AI SDK content parts, preserving text and reasoning/thinking parts.
+func extractAssistantContentParts(m map[string]any) []map[string]any {
+	parts := make([]map[string]any, 0, 4)
+
+	switch c := m["content"].(type) {
+	case string:
+		if strings.TrimSpace(c) != "" {
+			parts = append(parts, map[string]any{"type": "text", "text": c})
+		}
+	case []any:
+		// Content is already an array of parts (e.g. from a previous normalisation pass).
+		for _, raw := range c {
+			part, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			partType, _ := part["type"].(string)
+			switch partType {
+			case "text", "tool-call":
+				parts = append(parts, part)
+			case "thinking", "reasoning":
+				parts = append(parts, part)
+			default:
+				// Preserve unknown part types as-is.
+				parts = append(parts, part)
+			}
+		}
+	}
+
+	// Also check for provider-specific reasoning fields at the message level.
+	// Some providers (e.g. DeepSeek, QwQ) expose reasoning_content alongside content.
+	for _, key := range []string{"reasoning_content", "thinking", "reasoning"} {
+		if val, ok := m[key].(string); ok && strings.TrimSpace(val) != "" {
+			parts = append(parts, map[string]any{
+				"type":     "reasoning",
+				"text":     val,
+				"thinking": val, // Viewer accepts both fields
+			})
+			break
+		}
+	}
+
+	return parts
+}
+
+// isToolResultParts returns true when parts is a non-empty slice where every
+// element is a map containing type == "tool-result".
+func isToolResultParts(parts []any) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	for _, p := range parts {
+		m, ok := p.(map[string]any)
+		if !ok {
+			return false
+		}
+		if t, _ := m["type"].(string); t != "tool-result" {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeSamplingParams extracts white-listed sampling parameters from params and
+// writes them into inputObj so the Viewer StepConfigBar can display them.
+// Fields are only written when the caller explicitly set them (Valid() == true).
+func mergeSamplingParams(inputObj map[string]any, params openai.ChatCompletionNewParams) {
+	if params.Temperature.Valid() {
+		inputObj["temperature"] = params.Temperature.Value
+	}
+	if params.TopP.Valid() {
+		inputObj["topP"] = params.TopP.Value
+	}
+	// MaxCompletionTokens takes precedence over the deprecated MaxTokens.
+	if params.MaxCompletionTokens.Valid() {
+		inputObj["maxOutputTokens"] = params.MaxCompletionTokens.Value
+	} else if params.MaxTokens.Valid() {
+		inputObj["maxOutputTokens"] = params.MaxTokens.Value
+	}
+	// ToolChoice: serialise to a viewer-friendly string or object.
+	if tc := params.ToolChoice; !isZeroToolChoice(tc) {
+		if tc.OfAuto.Valid() {
+			inputObj["toolChoice"] = tc.OfAuto.Value
+		} else if tc.OfChatCompletionNamedToolChoice != nil {
+			inputObj["toolChoice"] = map[string]any{
+				"type":     "tool",
+				"toolName": tc.OfChatCompletionNamedToolChoice.Function.Name,
+			}
+		}
+	}
+}
+
+// isZeroToolChoice reports whether a ToolChoice union is the zero value (unset).
+func isZeroToolChoice(tc openai.ChatCompletionToolChoiceOptionUnionParam) bool {
+	return !tc.OfAuto.Valid() && tc.OfChatCompletionNamedToolChoice == nil
+}
+
+// ParseReasoningFromRawMessage extracts reasoning/thinking content from a raw
+// provider response message map. It checks common provider-specific fields.
+// Returns empty string when no reasoning content is found.
+func ParseReasoningFromRawMessage(msg map[string]any) string {
+	for _, key := range []string{"reasoning_content", "thinking", "reasoning"} {
+		if val, ok := msg[key].(string); ok && strings.TrimSpace(val) != "" {
+			return val
+		}
+	}
+	return ""
 }
 
 func mustJSON(v any) string {

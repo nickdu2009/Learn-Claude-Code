@@ -146,16 +146,16 @@ func agentLoop(
 			openai.SystemMessage(system),
 		}, messages...)
 
+		params := openai.ChatCompletionNewParams{
+			Messages: fullMessages,
+			Tools:    []openai.ChatCompletionToolParam{bashToolDef()},
+		}
+
 		stepID, start := "", time.Time{}
 		if rec != nil {
 			stepID, start = rec.StartStep(context.Background(), "generate", modelID, provider, fullMessages, []openai.ChatCompletionToolParam{bashToolDef()}, map[string]any{
 				"baseURL": os.Getenv("DASHSCOPE_BASE_URL"),
-			})
-		}
-
-		params := openai.ChatCompletionNewParams{
-			Messages: fullMessages,
-			Tools:    []openai.ChatCompletionToolParam{bashToolDef()},
+			}, params)
 		}
 		resp, err := llm.Complete(context.Background(), params)
 		if err != nil {
