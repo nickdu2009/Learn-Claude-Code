@@ -73,8 +73,8 @@ AI_SDK_DEVTOOLS_PORT=4983
   - **禁止自动清理产物**：集成测试默认**不要**用 `t.Cleanup` 删除 `.local/test-artifacts/...` 目录；需要清理时由开发者手动删除（或另写专门的清理脚本/命令）。
   - **DevTools 与测试产物分离**：DevTools 追踪文件只允许写入仓库根目录下的 `.devtools/`（测试中可在 `TestMain` 设置 `AI_SDK_DEVTOOLS_DIR=<repo>/.devtools`），**不得写入 `.local/`**。
 - **真实测试用例（Prompt Fixture）规范**：
-  - **以 Markdown 存储**：真实/通用测试 case 的需求文本应保存为 `pkg/testcases/*.md`。
-  - **以 embed 读取**：测试与代码读取这类 fixture 时优先使用 `go:embed`，避免依赖 repo root 搜索或运行时文件路径导致的不稳定。
+  - **以 Markdown 存储**：测试 case 的需求文本应保存在对应 Session 目录下的 `testdata/` 子目录中（例如 `agents/sXX_*/testdata/*.md`）。
+  - **以 embed 读取**：测试读取 fixture 时必须使用 `go:embed`，避免依赖运行时文件路径导致的不稳定。
 - **最小权限原则**：新增外部依赖或脚本前，优先评估安全影响与维护成本。
 
 ## 新增/修改 Session 的 checklist
