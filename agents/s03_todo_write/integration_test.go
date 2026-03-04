@@ -17,7 +17,7 @@ import (
 	"github.com/openai/openai-go"
 )
 
-//go:embed testdata/create_python_project.md
+//go:embed testdata/create_python_project.md testdata/nag_trigger.md
 var fixtureFS embed.FS
 
 // sandboxS03Dir 返回 s03 real 集成测试的隔离沙箱目录。
@@ -131,5 +131,95 @@ func TestIntegration_CreatePythonProject(t *testing.T) {
 			t.Errorf("expected all todos to be completed, but render shows pending/in_progress:\n%s", render)
 		}
 		t.Logf("final todo state:\n%s", render)
+	}
+}
+
+// IT-S03-REAL-02: 验证 nag 机制在真实 LLM 调用中被触发。
+//
+// 场景：system prompt 要求 LLM 先执行 3 次 bash（不调用 todo），
+// 连续 3 轮未调用 todo 后，RunWithTodoNag 应向 messages 注入
+// "Update your todos." 的 user message。
+//
+// 验证：返回的 history 中存在至少一条内容为 "Update your todos." 的 user message。
+func TestIntegration_NagInjectedAfterThreeRoundsWithoutTodo(t *testing.T) {
+	_ = godotenv.Load("../../.env")
+	if os.Getenv("DASHSCOPE_API_KEY") == "" {
+		t.Skip("DASHSCOPE_API_KEY not set, skipping real integration test")
+	}
+
+	promptBytes, err := fixtureFS.ReadFile("testdata/nag_trigger.md")
+	if err != nil {
+		t.Fatalf("failed to read fixture: %v", err)
+	}
+	prompt := strings.TrimSpace(string(promptBytes))
+
+	client, err := newClient()
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	model := getModel()
+
+	todoManager := NewTodoManager()
+
+	registry := tools.New()
+	registry.Register(tools.BashToolDef(), tools.BashHandler)
+	registry.Register(tools.TodoToolDef(), todoManager.HandleTodo)
+
+	// system prompt 明确要求先执行 3 次 bash，不要先调用 todo，
+	// 以可控地触发 nag（连续 3 轮未调用 todo → 注入提醒）。
+	system := "You are a coding agent. " +
+		"IMPORTANT: Execute the user's bash commands one by one first, " +
+		"do NOT call the todo tool until after all bash commands are done. " +
+		"Each bash command must be a separate tool call in its own round."
+
+	history := []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage(system),
+		openai.UserMessage(prompt),
+	}
+
+	history, err = loop.RunWithTodoNag(
+		context.Background(),
+		client,
+		model,
+		history,
+		registry,
+		devtools.NewRunRecorderFromEnv(),
+	)
+	if err != nil {
+		t.Fatalf("agent loop error: %v", err)
+	}
+
+	// 断言：history 中至少存在一条 nag user message
+	nagFound := false
+	for _, msg := range history {
+		if msg.OfUser == nil {
+			continue
+		}
+		content := msg.OfUser.Content
+		if content.OfString.Value == "Update your todos." {
+			nagFound = true
+			break
+		}
+		for _, part := range content.OfArrayOfContentParts {
+			if part.OfText != nil && strings.Contains(part.OfText.Text, "Update your todos.") {
+				nagFound = true
+				break
+			}
+		}
+		if nagFound {
+			break
+		}
+	}
+
+	if !nagFound {
+		// 打印 history 摘要便于调试
+		for i, msg := range history {
+			if msg.OfUser != nil {
+				t.Logf("history[%d] user: %q", i, msg.OfUser.Content.OfString.Value)
+			}
+		}
+		t.Error("expected at least one nag message 'Update your todos.' in history, but none found")
+	} else {
+		t.Log("nag message successfully injected into history")
 	}
 }
