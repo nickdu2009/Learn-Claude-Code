@@ -178,3 +178,78 @@ func TestListDirHandler_MissingPath(t *testing.T) {
 		t.Fatal("expected error for missing path, got nil")
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EditFileHandler 测试
+// ─────────────────────────────────────────────────────────────────────────────
+
+// UT-FS-EDIT-01: 正常替换首次匹配，验证文件内容更新正确。
+func TestEditFileHandler_Normal(t *testing.T) {
+	dir := sandboxDir(t)
+	target := filepath.Join(dir, "edit_me.txt")
+	if err := os.WriteFile(target, []byte("hello world hello"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	result, err := EditFileHandler(map[string]any{
+		"path":     target,
+		"old_text": "hello",
+		"new_text": "hi",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, target) {
+		t.Errorf("result should mention file path, got: %q", result)
+	}
+
+	// 只替换首次出现，第二个 hello 保留
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+	if string(data) != "hi world hello" {
+		t.Errorf("content mismatch: got %q", string(data))
+	}
+}
+
+// UT-FS-EDIT-02: old_text 不存在于文件中，应返回错误。
+func TestEditFileHandler_OldTextNotFound(t *testing.T) {
+	dir := sandboxDir(t)
+	target := filepath.Join(dir, "no_match.txt")
+	if err := os.WriteFile(target, []byte("some content"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	_, err := EditFileHandler(map[string]any{
+		"path":     target,
+		"old_text": "nonexistent",
+		"new_text": "replacement",
+	})
+	if err == nil {
+		t.Fatal("expected error when old_text not found, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error message should mention 'not found', got: %q", err.Error())
+	}
+}
+
+// UT-FS-EDIT-03: 缺少必要参数，应返回错误。
+func TestEditFileHandler_MissingArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		args map[string]any
+	}{
+		{"missing path", map[string]any{"old_text": "a", "new_text": "b"}},
+		{"missing old_text", map[string]any{"path": "/tmp/x.txt", "new_text": "b"}},
+		{"missing new_text", map[string]any{"path": "/tmp/x.txt", "old_text": "a"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := EditFileHandler(tc.args)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tc.name)
+			}
+		})
+	}
+}

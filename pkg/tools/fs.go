@@ -3,6 +3,7 @@ package tools
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/shared"
@@ -93,6 +94,58 @@ func ListDirToolDef() openai.ChatCompletionToolParam {
 			},
 		},
 	}
+}
+
+// EditFileToolDef returns the definition for the edit_file tool.
+func EditFileToolDef() openai.ChatCompletionToolParam {
+	return openai.ChatCompletionToolParam{
+		Type: "function",
+		Function: shared.FunctionDefinitionParam{
+			Name:        "edit_file",
+			Description: openai.String("Replace the first occurrence of old_text with new_text in a file."),
+			Parameters: openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"path":     map[string]any{"type": "string", "description": "The absolute or relative path to the file."},
+					"old_text": map[string]any{"type": "string", "description": "The exact text to find and replace (first occurrence only)."},
+					"new_text": map[string]any{"type": "string", "description": "The text to replace it with."},
+				},
+				"required": []string{"path", "old_text", "new_text"},
+			},
+		},
+	}
+}
+
+// EditFileHandler executes the edit_file tool.
+func EditFileHandler(args map[string]any) (string, error) {
+	path, ok := args["path"].(string)
+	if !ok {
+		return "", fmt.Errorf("missing or invalid 'path' argument")
+	}
+	oldText, ok := args["old_text"].(string)
+	if !ok {
+		return "", fmt.Errorf("missing or invalid 'old_text' argument")
+	}
+	newText, ok := args["new_text"].(string)
+	if !ok {
+		return "", fmt.Errorf("missing or invalid 'new_text' argument")
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file: %w", err)
+	}
+
+	src := string(content)
+	if !strings.Contains(src, oldText) {
+		return "", fmt.Errorf("text not found in %s", path)
+	}
+
+	updated := strings.Replace(src, oldText, newText, 1)
+	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
+		return "", fmt.Errorf("failed to write file: %w", err)
+	}
+	return fmt.Sprintf("Edited %s", path), nil
 }
 
 // ListDirHandler executes the list_dir tool.

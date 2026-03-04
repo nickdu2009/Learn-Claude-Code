@@ -39,6 +39,27 @@ func (m *mockHTTPClient) Do(_ *http.Request) (*http.Response, error) {
 	return makeHTTPStopResponse("(default stop)"), nil
 }
 
+// capturingMockHTTPClient records request bodies for assertions.
+type capturingMockHTTPClient struct {
+	responses     []*http.Response
+	callCount     int
+	requestBodies [][]byte
+}
+
+func (m *capturingMockHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	if req != nil && req.Body != nil {
+		b, _ := io.ReadAll(req.Body)
+		m.requestBodies = append(m.requestBodies, b)
+		_ = req.Body.Close()
+	}
+	i := m.callCount
+	m.callCount++
+	if i < len(m.responses) {
+		return m.responses[i], nil
+	}
+	return makeHTTPStopResponse("(default stop)"), nil
+}
+
 // makeHTTPStopResponse 构造一个 FinishReason=stop 的 HTTP 响应体。
 func makeHTTPStopResponse(content string) *http.Response {
 	raw := map[string]any{
@@ -119,6 +140,16 @@ func marshalToHTTPResponse(body map[string]any) *http.Response {
 
 // newMockClient 创建一个注入了 mockHTTPClient 的 openai.Client。
 func newMockClient(mock *mockHTTPClient) *openai.Client {
+	c := openai.NewClient(
+		option.WithAPIKey("mock-key"),
+		option.WithBaseURL("https://mock.example.com/v1/"),
+		option.WithHTTPClient(mock),
+		option.WithMaxRetries(0),
+	)
+	return &c
+}
+
+func newCapturingMockClient(mock *capturingMockHTTPClient) *openai.Client {
 	c := openai.NewClient(
 		option.WithAPIKey("mock-key"),
 		option.WithBaseURL("https://mock.example.com/v1/"),
@@ -318,5 +349,62 @@ func TestLoop_UnknownTool(t *testing.T) {
 	toolContent := toolMsg.OfTool.Content.OfString.Value
 	if !strings.Contains(toolContent, "error") {
 		t.Errorf("tool result should contain 'error', got: %q", toolContent)
+	}
+}
+
+// IT-LOOP-05: 连续 N 轮未调用 todo 时，应注入 nag reminder（Update your todos.）。
+func TestLoop_TodoNagReminderInjected(t *testing.T) {
+	// 4 次 tool_calls（都不是 todo），第 5 次 stop 结束。
+	// 预期：第 4 次请求（0-based index=3）开始，messages 中包含提醒 "Update your todos."
+	mock := &capturingMockHTTPClient{
+		responses: []*http.Response{
+			makeHTTPToolCallResponse("call-1", "bash", `{"command":"echo 1"}`),
+			makeHTTPToolCallResponse("call-2", "bash", `{"command":"echo 2"}`),
+			makeHTTPToolCallResponse("call-3", "bash", `{"command":"echo 3"}`),
+			makeHTTPToolCallResponse("call-4", "bash", `{"command":"echo 4"}`),
+			makeHTTPStopResponse("done"),
+		},
+	}
+	client := newCapturingMockClient(mock)
+
+	registry := tools.New()
+	registry.Register(tools.BashToolDef(), tools.BashHandler)
+	// todo 工具是否注册不影响注入逻辑（注入发生在模型调用前）。
+
+	initial := []openai.ChatCompletionMessageParamUnion{
+		openai.UserMessage("run a few steps"),
+	}
+
+	_, err := RunWithTodoNag(context.Background(), client, "mock-model", initial, registry, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mock.callCount < 4 {
+		t.Fatalf("expected at least 4 LLM calls, got %d", mock.callCount)
+	}
+	if len(mock.requestBodies) < 4 {
+		t.Fatalf("expected at least 4 request bodies, got %d", len(mock.requestBodies))
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(mock.requestBodies[3], &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	msgs, _ := req["messages"].([]any)
+	found := false
+	for _, m := range msgs {
+		obj, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := obj["role"].(string)
+		content, _ := obj["content"].(string)
+		if role == "user" && strings.Contains(content, "Update your todos.") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected nag reminder in 4th request messages, got: %s", string(mock.requestBodies[3]))
 	}
 }
