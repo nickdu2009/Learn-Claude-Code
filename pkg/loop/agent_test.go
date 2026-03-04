@@ -352,6 +352,83 @@ func TestLoop_UnknownTool(t *testing.T) {
 	}
 }
 
+// IT-LOOP-06: 调用 todo 后 roundsSinceTodo 重置为 0，之后不足 3 轮时不注入 nag。
+//
+// 场景序列：bash → bash → todo → bash → stop
+// 预期：第 4 次请求（index=3，bash 后 roundsSinceTodo=1）的 messages 中不包含 nag。
+func TestLoop_TodoNagResetAfterTodoCall(t *testing.T) {
+	todoArgs, _ := json.Marshal(map[string]any{
+		"items": []any{
+			map[string]any{"id": "1", "text": "step one", "status": "in_progress"},
+		},
+	})
+
+	mock := &capturingMockHTTPClient{
+		responses: []*http.Response{
+			makeHTTPToolCallResponse("call-1", "bash", `{"command":"echo 1"}`),
+			makeHTTPToolCallResponse("call-2", "bash", `{"command":"echo 2"}`),
+			makeHTTPToolCallResponse("call-3", "todo", string(todoArgs)),
+			makeHTTPToolCallResponse("call-4", "bash", `{"command":"echo 4"}`),
+			makeHTTPStopResponse("done"),
+		},
+	}
+	client := newCapturingMockClient(mock)
+
+	// 注册真实的 TodoManager，使 todo 工具调用能正常 dispatch。
+	type todoHandlerFunc func(args map[string]any) (string, error)
+	todoItems := []any{
+		map[string]any{"id": "1", "text": "step one", "status": "in_progress"},
+	}
+	_ = todoItems
+
+	registry := tools.New()
+	registry.Register(tools.BashToolDef(), tools.BashHandler)
+
+	// 用闭包模拟 todo handler（不依赖 s03 包，保持 pkg/loop 独立）。
+	todoCallCount := 0
+	registry.Register(tools.TodoToolDef(), func(args map[string]any) (string, error) {
+		todoCallCount++
+		return "[ ] #1: step one\n(0/1 completed)", nil
+	})
+
+	initial := []openai.ChatCompletionMessageParamUnion{
+		openai.UserMessage("run steps"),
+	}
+
+	_, err := RunWithTodoNag(context.Background(), client, "mock-model", initial, registry, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mock.callCount < 5 {
+		t.Fatalf("expected at least 5 LLM calls, got %d", mock.callCount)
+	}
+	if todoCallCount != 1 {
+		t.Errorf("expected todo handler called once, got %d", todoCallCount)
+	}
+
+	// 第 4 次请求（index=3）：todo 调用后 roundsSinceTodo 重置为 0，再过 1 轮 bash 后为 1，
+	// 未达到阈值 3，不应注入 nag。
+	if len(mock.requestBodies) < 4 {
+		t.Fatalf("expected at least 4 request bodies, got %d", len(mock.requestBodies))
+	}
+	var req map[string]any
+	if err := json.Unmarshal(mock.requestBodies[3], &req); err != nil {
+		t.Fatalf("failed to parse 4th request body: %v", err)
+	}
+	msgs, _ := req["messages"].([]any)
+	for _, m := range msgs {
+		obj, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := obj["role"].(string)
+		content, _ := obj["content"].(string)
+		if role == "user" && strings.Contains(content, "Update your todos.") {
+			t.Fatalf("nag should NOT be injected in 4th request after todo reset, but found it in messages")
+		}
+	}
+}
+
 // IT-LOOP-05: 连续 N 轮未调用 todo 时，应注入 nag reminder（Update your todos.）。
 func TestLoop_TodoNagReminderInjected(t *testing.T) {
 	// 4 次 tool_calls（都不是 todo），第 5 次 stop 结束。

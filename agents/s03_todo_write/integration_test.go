@@ -1,0 +1,135 @@
+package main
+
+import (
+	"context"
+	"embed"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/joho/godotenv"
+	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
+	"github.com/nickdu2009/learn-claude-code/pkg/loop"
+	"github.com/nickdu2009/learn-claude-code/pkg/tools"
+	"github.com/openai/openai-go"
+)
+
+//go:embed testdata/create_python_project.md
+var fixtureFS embed.FS
+
+// sandboxS03Dir 返回 s03 real 集成测试的隔离沙箱目录。
+func sandboxS03Dir(t *testing.T) string {
+	t.Helper()
+	repoRoot, err := filepath.Abs("../../")
+	if err != nil {
+		t.Fatalf("failed to resolve repo root: %v", err)
+	}
+	runID := fmt.Sprintf("%d", time.Now().UnixNano())
+	dir := filepath.Join(repoRoot, ".local", "test-artifacts", "s03", "real", t.Name(), runID)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("failed to create sandbox dir %s: %v", dir, err)
+	}
+	return dir
+}
+
+// IT-S03-REAL-01: 教程"试一试"场景 — 创建 Python 项目。
+//
+// 验证：
+//  1. Agent 在执行过程中至少调用一次 todo 工具
+//  2. 任务完成后 main.py、tests/、README.md 均存在于沙箱目录
+//  3. 最终 TodoManager 中所有 item 均为 completed
+func TestIntegration_CreatePythonProject(t *testing.T) {
+	// 未配置真实 API Key 时跳过，不影响 CI 的 go test ./...
+	_ = godotenv.Load("../../.env")
+	if os.Getenv("DASHSCOPE_API_KEY") == "" {
+		t.Skip("DASHSCOPE_API_KEY not set, skipping real integration test")
+	}
+
+	promptBytes, err := fixtureFS.ReadFile("testdata/create_python_project.md")
+	if err != nil {
+		t.Fatalf("failed to read fixture: %v", err)
+	}
+	prompt := strings.TrimSpace(string(promptBytes))
+
+	sandboxDir := sandboxS03Dir(t)
+	t.Logf("sandbox dir: %s", sandboxDir)
+
+	client, err := newClient()
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	model := getModel()
+
+	todoManager := NewTodoManager()
+
+	registry := tools.New()
+	registry.Register(tools.BashToolDef(), tools.BashHandler)
+	registry.Register(tools.ReadFileToolDef(), tools.ReadFileHandler)
+	registry.Register(tools.WriteFileToolDef(), tools.WriteFileHandler)
+	registry.Register(tools.ListDirToolDef(), tools.ListDirHandler)
+	registry.Register(tools.EditFileToolDef(), tools.EditFileHandler)
+	registry.Register(tools.TodoToolDef(), todoManager.HandleTodo)
+
+	// 明确要求 LLM 使用绝对路径写入沙箱目录，避免相对路径写入测试源码目录。
+	system := fmt.Sprintf(
+		"You are a coding agent. Your working directory is %s.\n"+
+			"IMPORTANT: Always use absolute paths starting with %s when creating or writing files.\n"+
+			"Use the todo tool to plan multi-step tasks. Mark in_progress before starting, completed when done.\n"+
+			"Prefer tools over prose.",
+		sandboxDir, sandboxDir,
+	)
+
+	history := []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage(system),
+		openai.UserMessage(prompt),
+	}
+
+	history, err = loop.RunWithTodoNag(
+		context.Background(),
+		client,
+		model,
+		history,
+		registry,
+		devtools.NewRunRecorderFromEnv(),
+	)
+	if err != nil {
+		t.Fatalf("agent loop error: %v", err)
+	}
+
+	// 断言 1：history 中至少有一次 todo 工具调用
+	todoCallFound := false
+	for _, msg := range history {
+		if msg.OfAssistant == nil {
+			continue
+		}
+		for _, tc := range msg.OfAssistant.ToolCalls {
+			if tc.Function.Name == "todo" {
+				todoCallFound = true
+				break
+			}
+		}
+	}
+	if !todoCallFound {
+		t.Error("agent should have called the todo tool at least once")
+	}
+
+	// 断言 2：沙箱目录中存在预期文件/目录
+	for _, rel := range []string{"main.py", "tests", "README.md"} {
+		path := filepath.Join(sandboxDir, rel)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Errorf("expected %s to exist in sandbox, but it does not", rel)
+		}
+	}
+
+	// 断言 3：所有 todo item 最终为 completed
+	if len(todoManager.items) > 0 {
+		render := todoManager.Render()
+		if strings.Contains(render, "[ ]") || strings.Contains(render, "[>]") {
+			t.Errorf("expected all todos to be completed, but render shows pending/in_progress:\n%s", render)
+		}
+		t.Logf("final todo state:\n%s", render)
+	}
+}
