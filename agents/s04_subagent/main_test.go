@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
 	"github.com/nickdu2009/learn-claude-code/pkg/loop"
 	"github.com/nickdu2009/learn-claude-code/pkg/tools"
 	"github.com/openai/openai-go"
@@ -67,6 +68,8 @@ func TestE2E_TaskDelegationWriteAndVerify(t *testing.T) {
 	dir := e2eSandboxDir(t)
 	t.Logf("sandbox dir: %s", dir)
 	targetFile := filepath.Join(dir, "delegated.txt")
+	tracePath := enableTraceForTest(t)
+	t.Logf("trace path: %s", tracePath)
 
 	prompt := strings.ReplaceAll(fixtureDelegateWriteAndVerify, "{{WORK_DIR}}", dir)
 	prompt = strings.ReplaceAll(prompt, "{{TARGET_FILE}}", targetFile)
@@ -103,7 +106,10 @@ func TestE2E_TaskDelegationWriteAndVerify(t *testing.T) {
 		openai.UserMessage(prompt),
 	}
 
-	result, err := loop.Run(context.Background(), client, model, history, parentRegistry)
+	rec := devtools.NewRecorderFromEnv()
+	ctx := devtools.WithRecorder(context.Background(), rec)
+
+	result, err := loop.Run(ctx, client, model, history, parentRegistry)
 	if err != nil {
 		t.Fatalf("loop error: %v", err)
 	}
@@ -181,4 +187,26 @@ func containsTool(names []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func enableTraceForTest(t *testing.T) string {
+	t.Helper()
+
+	repoRoot, err := filepath.Abs("../../")
+	if err != nil {
+		t.Fatalf("failed to resolve repo root: %v", err)
+	}
+
+	traceDir := filepath.Join(repoRoot, ".devtools")
+	tracePath := filepath.Join(traceDir, "generations.json")
+	t.Setenv("AI_SDK_DEVTOOLS", "1")
+	t.Setenv("AI_SDK_DEVTOOLS_DIR", traceDir)
+	if err := os.MkdirAll(traceDir, 0755); err != nil {
+		t.Fatalf("failed to create trace dir %s: %v", traceDir, err)
+	}
+	if err := os.Remove(tracePath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("failed to reset trace file %s: %v", tracePath, err)
+	}
+
+	return tracePath
 }
