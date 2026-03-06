@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,7 +34,7 @@ func BashToolDef() openai.ChatCompletionToolParam {
 }
 
 // BashHandler executes the bash command.
-func BashHandler(args map[string]any) (string, error) {
+func BashHandler(ctx context.Context, args map[string]any) (string, error) {
 	command, ok := args["command"].(string)
 	if !ok {
 		return "", fmt.Errorf("missing or invalid 'command' argument")
@@ -45,7 +46,7 @@ func BashHandler(args map[string]any) (string, error) {
 		}
 	}
 
-	cmd := exec.Command("bash", "-c", command)
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	cmd.Dir, _ = os.Getwd() // Default to current working directory
 	out, err := cmd.CombinedOutput()
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -28,7 +29,7 @@ func NewTodoManager() *TodoManager {
 	return &TodoManager{items: []TodoItem{}}
 }
 
-func (m *TodoManager) HandleTodo(args map[string]any) (string, error) {
+func (m *TodoManager) HandleTodo(_ context.Context, args map[string]any) (string, error) {
 	rawItems, ok := args["items"]
 	if !ok {
 		return "", fmt.Errorf("missing 'items' argument")

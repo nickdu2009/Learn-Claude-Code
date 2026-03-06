@@ -374,19 +374,11 @@ func TestLoop_TodoNagResetAfterTodoCall(t *testing.T) {
 	}
 	client := newCapturingMockClient(mock)
 
-	// 注册真实的 TodoManager，使 todo 工具调用能正常 dispatch。
-	type todoHandlerFunc func(args map[string]any) (string, error)
-	todoItems := []any{
-		map[string]any{"id": "1", "text": "step one", "status": "in_progress"},
-	}
-	_ = todoItems
-
 	registry := tools.New()
 	registry.Register(tools.BashToolDef(), tools.BashHandler)
 
-	// 用闭包模拟 todo handler（不依赖 s03 包，保持 pkg/loop 独立）。
 	todoCallCount := 0
-	registry.Register(tools.TodoToolDef(), func(args map[string]any) (string, error) {
+	registry.Register(tools.TodoToolDef(), func(_ context.Context, args map[string]any) (string, error) {
 		todoCallCount++
 		return "[ ] #1: step one\n(0/1 completed)", nil
 	})

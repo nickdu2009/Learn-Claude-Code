@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -15,7 +16,7 @@ func TestTodoManager_RenderEmpty(t *testing.T) {
 // UT-02: 验证正常单 in_progress 场景下 Render 输出格式精确正确。
 func TestTodoManager_HandleTodo_ValidAndSingleInProgress(t *testing.T) {
 	m := NewTodoManager()
-	out, err := m.HandleTodo(map[string]any{
+	out, err := m.HandleTodo(context.Background(), map[string]any{
 		"items": []any{
 			map[string]any{"id": "1", "text": "task a", "status": "pending"},
 			map[string]any{"id": "2", "text": "task b", "status": "in_progress"},
@@ -34,7 +35,7 @@ func TestTodoManager_HandleTodo_ValidAndSingleInProgress(t *testing.T) {
 
 func TestTodoManager_HandleTodo_RejectMultipleInProgress(t *testing.T) {
 	m := NewTodoManager()
-	_, err := m.HandleTodo(map[string]any{
+	_, err := m.HandleTodo(context.Background(), map[string]any{
 		"items": []any{
 			map[string]any{"id": "1", "text": "task a", "status": "in_progress"},
 			map[string]any{"id": "2", "text": "task b", "status": "in_progress"},
@@ -47,7 +48,7 @@ func TestTodoManager_HandleTodo_RejectMultipleInProgress(t *testing.T) {
 
 func TestTodoManager_HandleTodo_DefaultsIDAndStatus(t *testing.T) {
 	m := NewTodoManager()
-	out, err := m.HandleTodo(map[string]any{
+	out, err := m.HandleTodo(context.Background(), map[string]any{
 		"items": []any{
 			map[string]any{"text": "task a"},
 		},
@@ -68,7 +69,7 @@ func TestTodoManager_HandleTodo_ExceedsMaxItems(t *testing.T) {
 	for i := range items {
 		items[i] = map[string]any{"text": "task", "status": "pending"}
 	}
-	_, err := m.HandleTodo(map[string]any{"items": items})
+	_, err := m.HandleTodo(context.Background(), map[string]any{"items": items})
 	if err == nil {
 		t.Fatal("expected error for >20 items, got nil")
 	}
@@ -80,7 +81,7 @@ func TestTodoManager_HandleTodo_ExceedsMaxItems(t *testing.T) {
 // UT-06: text 为空应返回错误。
 func TestTodoManager_HandleTodo_EmptyText(t *testing.T) {
 	m := NewTodoManager()
-	_, err := m.HandleTodo(map[string]any{
+	_, err := m.HandleTodo(context.Background(), map[string]any{
 		"items": []any{
 			map[string]any{"id": "1", "text": "", "status": "pending"},
 		},
@@ -93,7 +94,7 @@ func TestTodoManager_HandleTodo_EmptyText(t *testing.T) {
 // UT-07: 无效 status 应返回错误且包含 "invalid status"。
 func TestTodoManager_HandleTodo_InvalidStatus(t *testing.T) {
 	m := NewTodoManager()
-	_, err := m.HandleTodo(map[string]any{
+	_, err := m.HandleTodo(context.Background(), map[string]any{
 		"items": []any{
 			map[string]any{"id": "1", "text": "task", "status": "unknown"},
 		},
@@ -109,7 +110,7 @@ func TestTodoManager_HandleTodo_InvalidStatus(t *testing.T) {
 // UT-08: 第二次调用应全量替换第一次的结果，而非追加。
 func TestTodoManager_HandleTodo_FullReplacement(t *testing.T) {
 	m := NewTodoManager()
-	_, err := m.HandleTodo(map[string]any{
+	_, err := m.HandleTodo(context.Background(), map[string]any{
 		"items": []any{
 			map[string]any{"id": "1", "text": "task a", "status": "pending"},
 			map[string]any{"id": "2", "text": "task b", "status": "pending"},
@@ -123,7 +124,7 @@ func TestTodoManager_HandleTodo_FullReplacement(t *testing.T) {
 		t.Fatalf("expected 3 items after first call, got %d", len(m.items))
 	}
 
-	_, err = m.HandleTodo(map[string]any{
+	_, err = m.HandleTodo(context.Background(), map[string]any{
 		"items": []any{
 			map[string]any{"id": "1", "text": "only task", "status": "pending"},
 		},
@@ -140,7 +141,7 @@ func TestTodoManager_HandleTodo_FullReplacement(t *testing.T) {
 // UT-09: 缺少 items 参数应返回 "missing 'items'" 错误。
 func TestTodoManager_HandleTodo_MissingItems(t *testing.T) {
 	m := NewTodoManager()
-	_, err := m.HandleTodo(map[string]any{})
+	_, err := m.HandleTodo(context.Background(), map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for missing items, got nil")
 	}
@@ -152,7 +153,7 @@ func TestTodoManager_HandleTodo_MissingItems(t *testing.T) {
 // UT-10: items 为非数组类型应返回 "expected array" 错误。
 func TestTodoManager_HandleTodo_ItemsNotArray(t *testing.T) {
 	m := NewTodoManager()
-	_, err := m.HandleTodo(map[string]any{
+	_, err := m.HandleTodo(context.Background(), map[string]any{
 		"items": "not-an-array",
 	})
 	if err == nil {
@@ -166,7 +167,7 @@ func TestTodoManager_HandleTodo_ItemsNotArray(t *testing.T) {
 // UT-11: Render 输出中 completed 计数应精确正确。
 func TestTodoManager_Render_CompletedCount(t *testing.T) {
 	m := NewTodoManager()
-	_, err := m.HandleTodo(map[string]any{
+	_, err := m.HandleTodo(context.Background(), map[string]any{
 		"items": []any{
 			map[string]any{"id": "1", "text": "task a", "status": "completed"},
 			map[string]any{"id": "2", "text": "task b", "status": "completed"},

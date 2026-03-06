@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -36,12 +37,12 @@ func TestRegistry_Register(t *testing.T) {
 func TestRegistry_Dispatch_OK(t *testing.T) {
 	r := New()
 	called := false
-	r.Register(BashToolDef(), func(args map[string]any) (string, error) {
+	r.Register(BashToolDef(), func(_ context.Context, args map[string]any) (string, error) {
 		called = true
 		return "dispatched", nil
 	})
 
-	result, err := r.Dispatch("bash", map[string]any{"command": "echo test"})
+	result, err := r.Dispatch(context.Background(), "bash", map[string]any{"command": "echo test"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestRegistry_Dispatch_OK(t *testing.T) {
 func TestRegistry_Dispatch_UnknownTool(t *testing.T) {
 	r := New()
 
-	_, err := r.Dispatch("magic_tool", map[string]any{})
+	_, err := r.Dispatch(context.Background(), "magic_tool", map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for unknown tool, got nil")
 	}
@@ -70,13 +71,13 @@ func TestRegistry_Dispatch_UnknownTool(t *testing.T) {
 func TestRegistry_Dispatch_ArgsPassthrough(t *testing.T) {
 	r := New()
 	var receivedArgs map[string]any
-	r.Register(ReadFileToolDef(), func(args map[string]any) (string, error) {
+	r.Register(ReadFileToolDef(), func(_ context.Context, args map[string]any) (string, error) {
 		receivedArgs = args
 		return "ok", nil
 	})
 
 	inputArgs := map[string]any{"path": "/some/path.txt"}
-	_, err := r.Dispatch("read_file", inputArgs)
+	_, err := r.Dispatch(context.Background(), "read_file", inputArgs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,7 +101,7 @@ func TestRegistry_AllS02Tools(t *testing.T) {
 	// 验证每个工具名都能被路由（即使 handler 内部可能报错，也不应返回 unknown tool）
 	toolNames := []string{"bash", "read_file", "write_file", "list_dir"}
 	for _, name := range toolNames {
-		_, err := r.Dispatch(name, map[string]any{})
+		_, err := r.Dispatch(context.Background(), name, map[string]any{})
 		if err != nil && strings.Contains(err.Error(), "unknown tool") {
 			t.Errorf("tool %q should be registered but got: %v", name, err)
 		}

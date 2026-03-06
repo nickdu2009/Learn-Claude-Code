@@ -312,6 +312,9 @@ func (r *RunRecorder) withDB(
 	mutate func(db *database) (changed bool),
 	notifyEvent string,
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -766,4 +769,26 @@ func newUUID() string {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Context-based Recorder propagation
+// ─────────────────────────────────────────────────────────────────────────────
+
+type recorderKey struct{}
+
+// WithRecorder returns a child context carrying the given RunRecorder.
+// If rec is nil the original context is returned unchanged.
+func WithRecorder(ctx context.Context, rec *RunRecorder) context.Context {
+	if rec == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, recorderKey{}, rec)
+}
+
+// RecorderFrom extracts the RunRecorder previously stored via WithRecorder.
+// Returns nil when no recorder is present.
+func RecorderFrom(ctx context.Context) *RunRecorder {
+	rec, _ := ctx.Value(recorderKey{}).(*RunRecorder)
+	return rec
 }

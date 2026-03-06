@@ -2,14 +2,16 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/openai/openai-go"
 )
 
 // Handler is the function signature for a tool implementation.
-// It receives the raw JSON arguments and returns a string result or an error.
-type Handler func(args map[string]any) (string, error)
+// It receives a context for cancellation/timeout and the raw JSON arguments,
+// and returns a string result or an error.
+type Handler func(ctx context.Context, args map[string]any) (string, error)
 
 // Registry holds tool definitions and their corresponding handlers.
 type Registry struct {
@@ -36,10 +38,10 @@ func (r *Registry) Definitions() []openai.ChatCompletionToolParam {
 }
 
 // Dispatch executes the handler for the given tool name with the provided arguments.
-func (r *Registry) Dispatch(name string, args map[string]any) (string, error) {
+func (r *Registry) Dispatch(ctx context.Context, name string, args map[string]any) (string, error) {
 	handler, ok := r.handlers[name]
 	if !ok {
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
-	return handler(args)
+	return handler(ctx, args)
 }

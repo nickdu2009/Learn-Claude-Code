@@ -42,6 +42,7 @@ func RunWithRecorder(
 	registry *tools.Registry,
 	rec *devtools.RunRecorder,
 ) ([]openai.ChatCompletionMessageParamUnion, error) {
+	ctx = devtools.WithRecorder(ctx, rec)
 	provider := inferProviderFromEnv()
 	useStream := isStreamingEnabled()
 
@@ -110,7 +111,7 @@ func RunWithRecorder(
 				return messages, fmt.Errorf("failed to parse tool args for %s: %w", tc.Function.Name, err)
 			}
 
-			output, err := registry.Dispatch(tc.Function.Name, args)
+			output, err := registry.Dispatch(ctx, tc.Function.Name, args)
 			if err != nil {
 				output = fmt.Sprintf("error: %s", err.Error())
 			}

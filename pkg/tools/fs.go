@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -28,7 +29,7 @@ func ReadFileToolDef() openai.ChatCompletionToolParam {
 }
 
 // ReadFileHandler executes the read_file tool.
-func ReadFileHandler(args map[string]any) (string, error) {
+func ReadFileHandler(_ context.Context, args map[string]any) (string, error) {
 	path, ok := args["path"].(string)
 	if !ok {
 		return "", fmt.Errorf("missing or invalid 'path' argument")
@@ -61,7 +62,7 @@ func WriteFileToolDef() openai.ChatCompletionToolParam {
 }
 
 // WriteFileHandler executes the write_file tool.
-func WriteFileHandler(args map[string]any) (string, error) {
+func WriteFileHandler(_ context.Context, args map[string]any) (string, error) {
 	path, ok := args["path"].(string)
 	if !ok {
 		return "", fmt.Errorf("missing or invalid 'path' argument")
@@ -117,7 +118,7 @@ func EditFileToolDef() openai.ChatCompletionToolParam {
 }
 
 // EditFileHandler executes the edit_file tool.
-func EditFileHandler(args map[string]any) (string, error) {
+func EditFileHandler(_ context.Context, args map[string]any) (string, error) {
 	path, ok := args["path"].(string)
 	if !ok {
 		return "", fmt.Errorf("missing or invalid 'path' argument")
@@ -149,7 +150,7 @@ func EditFileHandler(args map[string]any) (string, error) {
 }
 
 // ListDirHandler executes the list_dir tool.
-func ListDirHandler(args map[string]any) (string, error) {
+func ListDirHandler(_ context.Context, args map[string]any) (string, error) {
 	path, ok := args["path"].(string)
 	if !ok {
 		return "", fmt.Errorf("missing or invalid 'path' argument")

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,7 +35,7 @@ func TestWriteFileHandler_Normal(t *testing.T) {
 	dir := sandboxDir(t)
 	target := filepath.Join(dir, "hello.txt")
 
-	result, err := WriteFileHandler(map[string]any{
+	result, err := WriteFileHandler(context.Background(), map[string]any{
 		"path":    target,
 		"content": "hello s02",
 	})
@@ -56,7 +57,7 @@ func TestWriteFileHandler_Normal(t *testing.T) {
 
 // UT-FS-02: 缺少 path 参数，应返回错误。
 func TestWriteFileHandler_MissingPath(t *testing.T) {
-	_, err := WriteFileHandler(map[string]any{
+	_, err := WriteFileHandler(context.Background(), map[string]any{
 		"content": "some content",
 	})
 	if err == nil {
@@ -67,7 +68,7 @@ func TestWriteFileHandler_MissingPath(t *testing.T) {
 // UT-FS-02b: 缺少 content 参数，应返回错误。
 func TestWriteFileHandler_MissingContent(t *testing.T) {
 	dir := sandboxDir(t)
-	_, err := WriteFileHandler(map[string]any{
+	_, err := WriteFileHandler(context.Background(), map[string]any{
 		"path": filepath.Join(dir, "no-content.txt"),
 	})
 	if err == nil {
@@ -87,7 +88,7 @@ func TestReadFileHandler_Normal(t *testing.T) {
 		t.Fatalf("setup: failed to create test file: %v", err)
 	}
 
-	result, err := ReadFileHandler(map[string]any{"path": target})
+	result, err := ReadFileHandler(context.Background(), map[string]any{"path": target})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestReadFileHandler_Normal(t *testing.T) {
 
 // UT-FS-04: 读取不存在的文件，应返回错误。
 func TestReadFileHandler_NotFound(t *testing.T) {
-	_, err := ReadFileHandler(map[string]any{
+	_, err := ReadFileHandler(context.Background(), map[string]any{
 		"path": "/nonexistent/path/s02_test_file_12345.txt",
 	})
 	if err == nil {
@@ -111,7 +112,7 @@ func TestReadFileHandler_NotFound(t *testing.T) {
 
 // UT-FS-04b: 缺少 path 参数，应返回错误。
 func TestReadFileHandler_MissingPath(t *testing.T) {
-	_, err := ReadFileHandler(map[string]any{})
+	_, err := ReadFileHandler(context.Background(), map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for missing path, got nil")
 	}
@@ -133,7 +134,7 @@ func TestListDirHandler_Normal(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	result, err := ListDirHandler(map[string]any{"path": dir})
+	result, err := ListDirHandler(context.Background(), map[string]any{"path": dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestListDirHandler_Normal(t *testing.T) {
 func TestListDirHandler_EmptyDir(t *testing.T) {
 	dir := sandboxDir(t)
 
-	result, err := ListDirHandler(map[string]any{"path": dir})
+	result, err := ListDirHandler(context.Background(), map[string]any{"path": dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -160,7 +161,7 @@ func TestListDirHandler_EmptyDir(t *testing.T) {
 
 // UT-FS-06b: 列出不存在的目录，应返回错误。
 func TestListDirHandler_NotFound(t *testing.T) {
-	_, err := ListDirHandler(map[string]any{
+	_, err := ListDirHandler(context.Background(), map[string]any{
 		"path": "/nonexistent/s02_test_dir_12345",
 	})
 	if err == nil {
@@ -173,7 +174,7 @@ func TestListDirHandler_NotFound(t *testing.T) {
 
 // UT-FS-06c: 缺少 path 参数，应返回错误。
 func TestListDirHandler_MissingPath(t *testing.T) {
-	_, err := ListDirHandler(map[string]any{})
+	_, err := ListDirHandler(context.Background(), map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for missing path, got nil")
 	}
@@ -191,7 +192,7 @@ func TestEditFileHandler_Normal(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	result, err := EditFileHandler(map[string]any{
+	result, err := EditFileHandler(context.Background(), map[string]any{
 		"path":     target,
 		"old_text": "hello",
 		"new_text": "hi",
@@ -221,7 +222,7 @@ func TestEditFileHandler_OldTextNotFound(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	_, err := EditFileHandler(map[string]any{
+	_, err := EditFileHandler(context.Background(), map[string]any{
 		"path":     target,
 		"old_text": "nonexistent",
 		"new_text": "replacement",
@@ -246,7 +247,7 @@ func TestEditFileHandler_MissingArgs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := EditFileHandler(tc.args)
+			_, err := EditFileHandler(context.Background(), tc.args)
 			if err == nil {
 				t.Fatalf("expected error for %s, got nil", tc.name)
 			}
