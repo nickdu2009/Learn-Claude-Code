@@ -3,6 +3,7 @@
 .local/
 .cursor/
 openspec/
+node_modules/
 
 # 编译产物
 agents/s01_agent_loop/s01_agent_loop
