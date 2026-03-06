@@ -13,10 +13,10 @@ Usage:
 
 Env:
   AI_SDK_DEVTOOLS_PORT        Viewer port (default: 4983)
-  AI_SDK_DEVTOOLS_VERSION     @ai-sdk/devtools version (default: 0.0.15)
+  AI_SDK_DEVTOOLS_DIR         Trace directory (default: .devtools)
 
 Notes:
-  - This viewer reads .devtools/generations.json under the repo root.
+  - This viewer reads generations.json in the configured trace directory.
   - Only use for local development (data is stored in plain text).
 EOF
 }
@@ -26,10 +26,17 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-if command -v npx >/dev/null 2>&1; then
+if command -v go >/dev/null 2>&1; then
   :
 else
-  echo "Error: npx not found. Please install Node.js (which provides npx)." >&2
+  echo "Error: go not found. Please install Go." >&2
+  exit 1
+fi
+
+if command -v npm >/dev/null 2>&1; then
+  :
+else
+  echo "Error: npm not found. Please install Node.js." >&2
   exit 1
 fi
 
@@ -42,14 +49,20 @@ if [[ -f ".env" ]]; then
 fi
 
 DEVTOOLS_PORT="${AI_SDK_DEVTOOLS_PORT:-4983}"
-DEVTOOLS_VERSION="${AI_SDK_DEVTOOLS_VERSION:-0.0.15}"
-
 export AI_SDK_DEVTOOLS_PORT="${DEVTOOLS_PORT}"
+VIEWER_DIR="${REPO_ROOT}/pkg/devtools/viewer"
 
-echo "Starting AI SDK DevTools viewer..."
+if [[ ! -d "${VIEWER_DIR}/node_modules" ]]; then
+  echo "Installing viewer frontend dependencies..."
+  npm install --prefix "${VIEWER_DIR}"
+fi
+
+echo "Building forked DevTools frontend..."
+npm run build --prefix "${VIEWER_DIR}"
+
+echo "Starting Trace V2 viewer..."
 echo "  - port:    ${DEVTOOLS_PORT}"
-echo "  - version: ${DEVTOOLS_VERSION}"
 echo "  - url:     http://localhost:${DEVTOOLS_PORT}"
 
-npx --yes "@ai-sdk/devtools@${DEVTOOLS_VERSION}"
+go run ./cmd/devtools-viewer
 

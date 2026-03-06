@@ -1,9 +1,13 @@
 package devtools
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
@@ -382,4 +386,308 @@ func assertContainsString(t *testing.T, haystack, needle string) {
 	if !strings.Contains(haystack, needle) {
 		t.Errorf("expected %q to contain %q", haystack, needle)
 	}
+}
+
+func TestRecorderTraceV2_RootRunLifecycle(t *testing.T) {
+	rec := newTestRecorder(t, "root-run")
+	ctx := context.Background()
+
+	if err := rec.BeginRun(ctx, RunMeta{
+		Kind:         "main",
+		Title:        "Root Run",
+		InputPreview: "solve the task",
+	}); err != nil {
+		t.Fatalf("begin run: %v", err)
+	}
+
+	stepID, start := rec.StartStep(
+		ctx,
+		"generate",
+		"mock-model",
+		"dashscope",
+		[]openai.ChatCompletionMessageParamUnion{openai.UserMessage("hello")},
+		nil,
+		map[string]any{"baseURL": "https://example.com"},
+	)
+	rec.FinishStep(
+		ctx,
+		stepID,
+		start,
+		map[string]any{"finishReason": "stop"},
+		map[string]any{"totalTokens": 3},
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	if err := rec.FinishRun(ctx, RunResult{
+		Status:           "completed",
+		CompletionReason: "normal",
+		Summary:          "done",
+	}); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
+
+	trace := readTraceFile(t, rec.store.dbPath)
+	if trace.Version != traceVersion {
+		t.Fatalf("version = %d, want %d", trace.Version, traceVersion)
+	}
+	if len(trace.Runs) != 1 {
+		t.Fatalf("runs = %d, want 1", len(trace.Runs))
+	}
+	if len(trace.Steps) != 1 {
+		t.Fatalf("steps = %d, want 1", len(trace.Steps))
+	}
+
+	run := trace.Runs[0]
+	if run.ID != rec.RunID() {
+		t.Fatalf("run id = %q, want %q", run.ID, rec.RunID())
+	}
+	if run.Kind != "main" {
+		t.Fatalf("run kind = %q, want main", run.Kind)
+	}
+	if run.Title != "Root Run" {
+		t.Fatalf("run title = %q, want Root Run", run.Title)
+	}
+	if run.Status != "completed" {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+	if run.StepCount != 1 {
+		t.Fatalf("step_count = %d, want 1", run.StepCount)
+	}
+	if run.FinishedAt == nil {
+		t.Fatal("finished_at should be set")
+	}
+	if derefString(run.InputPreview) != "solve the task" {
+		t.Fatalf("input preview = %q", derefString(run.InputPreview))
+	}
+	if derefString(run.Summary) != "done" {
+		t.Fatalf("summary = %q", derefString(run.Summary))
+	}
+
+	step := trace.Steps[0]
+	if step.RunID != rec.RunID() {
+		t.Fatalf("step run_id = %q, want %q", step.RunID, rec.RunID())
+	}
+	if len(step.LinkedChildRunIDs) != 0 {
+		t.Fatalf("linked child runs = %v, want empty", step.LinkedChildRunIDs)
+	}
+}
+
+func TestRecorderTraceV2_SpawnChildLinksParentStep(t *testing.T) {
+	rec := newTestRecorder(t, "parent-run")
+	ctx := context.Background()
+
+	if err := rec.BeginRun(ctx, RunMeta{Kind: "main", Title: "Parent Run"}); err != nil {
+		t.Fatalf("begin parent run: %v", err)
+	}
+
+	parentStepID, parentStart := rec.StartStep(
+		ctx,
+		"generate",
+		"mock-model",
+		"dashscope",
+		[]openai.ChatCompletionMessageParamUnion{openai.UserMessage("delegate this task")},
+		nil,
+		nil,
+	)
+	rec.FinishStep(ctx, parentStepID, parentStart, nil, nil, nil, nil, nil, nil)
+
+	childRecorder, err := rec.SpawnChild(ctx, parentStepID, ChildRunMeta{
+		Kind:         "subagent",
+		Title:        "Child Run",
+		InputPreview: "inspect project layout",
+	})
+	if err != nil {
+		t.Fatalf("spawn child: %v", err)
+	}
+
+	child, ok := childRecorder.(*runRecorder)
+	if !ok {
+		t.Fatalf("expected *runRecorder, got %T", childRecorder)
+	}
+
+	childStepID, childStart := child.StartStep(
+		ctx,
+		"generate",
+		"mock-model",
+		"dashscope",
+		[]openai.ChatCompletionMessageParamUnion{openai.UserMessage("child work")},
+		nil,
+		nil,
+	)
+	child.FinishStep(ctx, childStepID, childStart, nil, nil, nil, nil, nil, nil)
+	if err := child.FinishRun(ctx, RunResult{
+		Status:           "completed",
+		CompletionReason: "normal",
+		Summary:          "child summary",
+	}); err != nil {
+		t.Fatalf("finish child run: %v", err)
+	}
+
+	trace := readTraceFile(t, rec.store.dbPath)
+	if len(trace.Runs) != 2 {
+		t.Fatalf("runs = %d, want 2", len(trace.Runs))
+	}
+	if len(trace.Steps) != 2 {
+		t.Fatalf("steps = %d, want 2", len(trace.Steps))
+	}
+
+	parent := findRunByID(t, trace.Runs, rec.RunID())
+	if parent.StepCount != 1 {
+		t.Fatalf("parent step_count = %d, want 1", parent.StepCount)
+	}
+	childRun := findRunByID(t, trace.Runs, child.RunID())
+	if childRun.Kind != "subagent" {
+		t.Fatalf("child kind = %q, want subagent", childRun.Kind)
+	}
+	if derefString(childRun.ParentRunID) != rec.RunID() {
+		t.Fatalf("child parent_run_id = %q, want %q", derefString(childRun.ParentRunID), rec.RunID())
+	}
+	if derefString(childRun.ParentStepID) != parentStepID {
+		t.Fatalf("child parent_step_id = %q, want %q", derefString(childRun.ParentStepID), parentStepID)
+	}
+	if childRun.StepCount != 1 {
+		t.Fatalf("child step_count = %d, want 1", childRun.StepCount)
+	}
+	if derefString(childRun.Summary) != "child summary" {
+		t.Fatalf("child summary = %q", derefString(childRun.Summary))
+	}
+
+	parentStep := findStepByID(t, trace.Steps, parentStepID)
+	if len(parentStep.LinkedChildRunIDs) != 1 || parentStep.LinkedChildRunIDs[0] != child.RunID() {
+		t.Fatalf("parent step linked child ids = %v, want [%s]", parentStep.LinkedChildRunIDs, child.RunID())
+	}
+	childStep := findStepByID(t, trace.Steps, childStepID)
+	if childStep.RunID != child.RunID() {
+		t.Fatalf("child step run_id = %q, want %q", childStep.RunID, child.RunID())
+	}
+}
+
+func TestRecorderTraceV2_RewritesLegacyTrace(t *testing.T) {
+	rec := newTestRecorder(t, "rewrite-run")
+	ctx := context.Background()
+
+	if err := os.WriteFile(rec.store.dbPath, []byte(`{"runs":[{"id":"legacy"}],"steps":[]}`), 0o644); err != nil {
+		t.Fatalf("write legacy trace: %v", err)
+	}
+
+	if err := rec.BeginRun(ctx, RunMeta{Kind: "main", Title: "Rewrite"}); err != nil {
+		t.Fatalf("begin run: %v", err)
+	}
+
+	trace := readTraceFile(t, rec.store.dbPath)
+	if trace.Version != traceVersion {
+		t.Fatalf("version = %d, want %d", trace.Version, traceVersion)
+	}
+	if len(trace.Runs) != 1 {
+		t.Fatalf("runs = %d, want 1", len(trace.Runs))
+	}
+	if trace.Runs[0].ID != rec.RunID() {
+		t.Fatalf("run id = %q, want %q", trace.Runs[0].ID, rec.RunID())
+	}
+}
+
+func TestValidateTraceFile_RejectsBrokenInvariants(t *testing.T) {
+	parentRunID := "parent"
+	parentStepID := "step-1"
+	db := database{
+		Version: traceVersion,
+		Runs: []Run{
+			{
+				ID:        parentRunID,
+				Kind:      "main",
+				Title:     "Parent",
+				Status:    "completed",
+				StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
+				FinishedAt: func() *string {
+					s := time.Now().UTC().Format(time.RFC3339Nano)
+					return &s
+				}(),
+				StepCount: 1,
+			},
+			{
+				ID:           "child",
+				Kind:         "subagent",
+				Title:        "Child",
+				Status:       "completed",
+				StartedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+				FinishedAt:   stringPtr(time.Now().UTC().Format(time.RFC3339Nano)),
+				ParentRunID:  &parentRunID,
+				ParentStepID: stringPtr("missing-step"),
+				StepCount:    0,
+			},
+		},
+		Steps: []Step{
+			{
+				ID:                parentStepID,
+				RunID:             parentRunID,
+				StepNumber:        1,
+				Type:              "generate",
+				ModelID:           "mock-model",
+				StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+				Input:             "{}",
+				LinkedChildRunIDs: []string{"child"},
+			},
+		},
+	}
+
+	if err := validateTraceFile(db); err == nil {
+		t.Fatal("expected invariant validation error")
+	}
+}
+
+func newTestRecorder(t *testing.T, runID string) *runRecorder {
+	t.Helper()
+
+	dir := t.TempDir()
+	return &runRecorder{
+		store: &recorderStore{
+			enabled: true,
+			dbDir:   dir,
+			dbPath:  filepath.Join(dir, "generations.json"),
+		},
+		runID:            runID,
+		startedAt:        time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC),
+		toolNameByCallID: make(map[string]string),
+		kind:             "main",
+		title:            "main agent",
+	}
+}
+
+func readTraceFile(t *testing.T, path string) database {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace file: %v", err)
+	}
+	var trace database
+	if err := json.Unmarshal(data, &trace); err != nil {
+		t.Fatalf("unmarshal trace file: %v", err)
+	}
+	return trace
+}
+
+func findRunByID(t *testing.T, runs []Run, id string) Run {
+	t.Helper()
+	for _, run := range runs {
+		if run.ID == id {
+			return run
+		}
+	}
+	t.Fatalf("run %q not found", id)
+	return Run{}
+}
+
+func findStepByID(t *testing.T, steps []Step, id string) Step {
+	t.Helper()
+	for _, step := range steps {
+		if step.ID == id {
+			return step
+		}
+	}
+	t.Fatalf("step %q not found", id)
+	return Step{}
 }

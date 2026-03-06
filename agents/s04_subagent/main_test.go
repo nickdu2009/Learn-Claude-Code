@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	_ "embed"
 	"fmt"
 	"os"
@@ -108,11 +109,20 @@ func TestE2E_TaskDelegationWriteAndVerify(t *testing.T) {
 
 	rec := devtools.NewRecorderFromEnv()
 	ctx := devtools.WithRecorder(context.Background(), rec)
+	_ = rec.BeginRun(ctx, devtools.RunMeta{
+		Kind:  "main",
+		Title: "s04 parent agent test",
+	})
 
 	result, err := loop.Run(ctx, client, model, history, parentRegistry)
 	if err != nil {
 		t.Fatalf("loop error: %v", err)
 	}
+	_ = rec.FinishRun(ctx, devtools.RunResult{
+		Status:           "completed",
+		CompletionReason: "normal",
+		Summary:          extractFinalReply(result),
+	})
 
 	toolsUsed := extractToolNames(result)
 	t.Logf("tools used by parent model: %v", toolsUsed)
@@ -139,6 +149,35 @@ func TestE2E_TaskDelegationWriteAndVerify(t *testing.T) {
 	if !strings.Contains(strings.ToLower(finalReply), "verification succeeded") &&
 		!strings.Contains(strings.ToLower(finalReply), "verified") {
 		t.Errorf("final reply should mention successful verification, got %q", finalReply)
+	}
+
+	trace := readIntegrationTraceFile(t, tracePath)
+	if trace.Version != 2 {
+		t.Fatalf("trace version = %d, want 2", trace.Version)
+	}
+	if len(trace.Runs) < 2 {
+		t.Fatalf("expected at least 2 runs, got %d", len(trace.Runs))
+	}
+
+	childRun := findSubagentRun(t, trace.Runs)
+	if childRun.ParentRunID == nil || childRun.ParentStepID == nil {
+		t.Fatalf("child run linkage missing: %+v", childRun)
+	}
+	if strings.TrimSpace(derefStringPtr(childRun.Summary)) == "" {
+		t.Fatalf("child run summary should not be empty: %+v", childRun)
+	}
+
+	parentRun := findRunByID(t, trace.Runs, *childRun.ParentRunID)
+	if parentRun.Kind != "main" {
+		t.Fatalf("expected parent kind main, got %q", parentRun.Kind)
+	}
+
+	parentStep := findIntegrationStepByID(t, trace.Steps, *childRun.ParentStepID)
+	if parentStep.RunID != parentRun.ID {
+		t.Fatalf("parent step run_id = %q, want %q", parentStep.RunID, parentRun.ID)
+	}
+	if !containsTraceID(parentStep.LinkedChildRunIDs, childRun.ID) {
+		t.Fatalf("expected parent step %q to link child run %q, got %v", parentStep.ID, childRun.ID, parentStep.LinkedChildRunIDs)
 	}
 }
 
@@ -204,9 +243,75 @@ func enableTraceForTest(t *testing.T) string {
 	if err := os.MkdirAll(traceDir, 0755); err != nil {
 		t.Fatalf("failed to create trace dir %s: %v", traceDir, err)
 	}
-	if err := os.Remove(tracePath); err != nil && !os.IsNotExist(err) {
-		t.Fatalf("failed to reset trace file %s: %v", tracePath, err)
-	}
 
 	return tracePath
+}
+
+type integrationTraceFile struct {
+	Version int            `json:"version"`
+	Runs    []devtools.Run `json:"runs"`
+	Steps   []devtools.Step `json:"steps"`
+}
+
+func readIntegrationTraceFile(t *testing.T, path string) integrationTraceFile {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read trace file %s: %v", path, err)
+	}
+	var trace integrationTraceFile
+	if err := json.Unmarshal(data, &trace); err != nil {
+		t.Fatalf("failed to decode trace file %s: %v", path, err)
+	}
+	return trace
+}
+
+func findSubagentRun(t *testing.T, runs []devtools.Run) devtools.Run {
+	t.Helper()
+	for _, run := range runs {
+		if run.Kind == "subagent" {
+			return run
+		}
+	}
+	t.Fatal("expected at least one subagent run")
+	return devtools.Run{}
+}
+
+func findRunByID(t *testing.T, runs []devtools.Run, id string) devtools.Run {
+	t.Helper()
+	for _, run := range runs {
+		if run.ID == id {
+			return run
+		}
+	}
+	t.Fatalf("run %q not found", id)
+	return devtools.Run{}
+}
+
+func findIntegrationStepByID(t *testing.T, steps []devtools.Step, id string) devtools.Step {
+	t.Helper()
+	for _, step := range steps {
+		if step.ID == id {
+			return step
+		}
+	}
+	t.Fatalf("step %q not found", id)
+	return devtools.Step{}
+}
+
+func containsTraceID(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func derefStringPtr(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

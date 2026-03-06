@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
 	"github.com/nickdu2009/learn-claude-code/pkg/loop"
 	"github.com/nickdu2009/learn-claude-code/pkg/tools"
 	"github.com/openai/openai-go"
@@ -32,6 +33,24 @@ func sandboxS03Dir(t *testing.T) string {
 		t.Fatalf("failed to create sandbox dir %s: %v", dir, err)
 	}
 	return dir
+}
+
+// repoRoot returns the repository root for integration tests.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.Abs("../../")
+	if err != nil {
+		t.Fatalf("failed to resolve repo root: %v", err)
+	}
+	return root
+}
+
+// enableViewerTrace routes real integration traces to the local viewer store.
+func enableViewerTrace(t *testing.T) {
+	t.Helper()
+
+	t.Setenv("AI_SDK_DEVTOOLS", "1")
+	t.Setenv("AI_SDK_DEVTOOLS_DIR", filepath.Join(repoRoot(t), ".devtools"))
 }
 
 // IT-S03-REAL-01: 教程"试一试"场景 — 创建 Python 项目。
@@ -86,8 +105,15 @@ func TestIntegration_CreatePythonProject(t *testing.T) {
 		openai.UserMessage(prompt),
 	}
 
-	history, err = loop.RunWithTodoNag(
+	enableViewerTrace(t)
+	history, err = loop.RunWithManagedTrace(
 		context.Background(),
+		devtools.RunMeta{
+			Kind:         "main",
+			Title:        t.Name(),
+			InputPreview: prompt,
+		},
+		loop.RunWithTodoNag,
 		client,
 		model,
 		history,
@@ -175,8 +201,15 @@ func TestIntegration_NagInjectedAfterThreeRoundsWithoutTodo(t *testing.T) {
 		openai.UserMessage(prompt),
 	}
 
-	history, err = loop.RunWithTodoNag(
+	enableViewerTrace(t)
+	history, err = loop.RunWithManagedTrace(
 		context.Background(),
+		devtools.RunMeta{
+			Kind:         "main",
+			Title:        t.Name(),
+			InputPreview: prompt,
+		},
+		loop.RunWithTodoNag,
 		client,
 		model,
 		history,

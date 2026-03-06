@@ -21,6 +21,8 @@ const (
 // when the model goes N rounds without calling the todo tool.
 //
 // The Recorder is obtained from ctx via devtools.RecorderFrom (see Run).
+// For one-shot top-level tasks that want automatic BeginRun/FinishRun
+// management, prefer wrapping this runner with RunWithManagedTrace.
 func RunWithTodoNag(
 	ctx context.Context,
 	client *openai.Client,

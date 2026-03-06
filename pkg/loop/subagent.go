@@ -110,7 +110,14 @@ func runSubagentWithCaller(
 
 		if useStream {
 			if client == nil {
-				return "", fmt.Errorf("streaming subagent requires a client")
+				err := fmt.Errorf("streaming subagent requires a client")
+				_ = rec.FinishRun(ctx, devtools.RunResult{
+					Status:           "error",
+					CompletionReason: "error",
+					Summary:          err.Error(),
+					Error:            err.Error(),
+				})
+				return "", err
 			}
 			choice, resp, rawChunks, callErr = runStreaming(ctx, client, params)
 		} else {
@@ -122,7 +129,14 @@ func runSubagentWithCaller(
 
 		if callErr != nil {
 			rec.FinishStep(ctx, stepID, start, nil, nil, fmt.Errorf("API call failed: %w", callErr), params, nil, nil)
-			return "", fmt.Errorf("API call failed: %w", callErr)
+			err := fmt.Errorf("API call failed: %w", callErr)
+			_ = rec.FinishRun(ctx, devtools.RunResult{
+				Status:           "error",
+				CompletionReason: "error",
+				Summary:          err.Error(),
+				Error:            err.Error(),
+			})
+			return "", err
 		}
 
 		messages = append(messages, choice.Message.ToParam())
@@ -132,7 +146,13 @@ func runSubagentWithCaller(
 		rec.FinishStep(ctx, stepID, start, output, usage, nil, params, resp, rawChunks)
 
 		if choice.FinishReason != "tool_calls" {
-			return assistantSummary(choice.Message), nil
+			summary := assistantSummary(choice.Message)
+			_ = rec.FinishRun(ctx, devtools.RunResult{
+				Status:           "completed",
+				CompletionReason: "normal",
+				Summary:          summary,
+			})
+			return summary, nil
 		}
 
 		for _, tc := range choice.Message.ToolCalls {
@@ -140,10 +160,18 @@ func runSubagentWithCaller(
 
 			var args map[string]any
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				return "", fmt.Errorf("failed to parse tool args for %s: %w", tc.Function.Name, err)
+				runErr := fmt.Errorf("failed to parse tool args for %s: %w", tc.Function.Name, err)
+				_ = rec.FinishRun(ctx, devtools.RunResult{
+					Status:           "error",
+					CompletionReason: "error",
+					Summary:          runErr.Error(),
+					Error:            runErr.Error(),
+				})
+				return "", runErr
 			}
 
-			output, err := registry.Dispatch(ctx, tc.Function.Name, args)
+			toolCtx := devtools.WithParentStep(ctx, stepID)
+			output, err := registry.Dispatch(toolCtx, tc.Function.Name, args)
 			if err != nil {
 				output = fmt.Sprintf("error: %s", err.Error())
 			}
@@ -152,7 +180,13 @@ func runSubagentWithCaller(
 		}
 	}
 
-	return fmt.Sprintf("Subagent stopped after reaching the safety limit (%d rounds).", maxRounds), nil
+	summary := fmt.Sprintf("Subagent stopped after reaching the safety limit (%d rounds).", maxRounds)
+	_ = rec.FinishRun(ctx, devtools.RunResult{
+		Status:           "completed",
+		CompletionReason: "safety-limit",
+		Summary:          summary,
+	})
+	return summary, nil
 }
 
 func assistantSummary(msg openai.ChatCompletionMessage) string {

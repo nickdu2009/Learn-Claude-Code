@@ -53,16 +53,22 @@ func main() {
 	parentRegistry.Register(
 		tools.TaskToolDef(),
 		tools.NewTaskHandler(func(ctx context.Context, prompt string, description string) (string, error) {
-			desc := strings.TrimSpace(description)
-			if desc == "" {
-				desc = "subtask"
-			}
-			fmt.Printf("> task (%s): %s\n", desc, preview(prompt, 80))
+			fmt.Printf("> task (%s): %s\n", description, preview(prompt, 80))
 			return loop.RunSubagent(ctx, client, model, childSystem, prompt, childRegistry)
 		}),
 	)
 
 	rec := devtools.NewRecorderFromEnv()
+	_ = rec.BeginRun(context.Background(), devtools.RunMeta{
+		Kind:  "main",
+		Title: "s04 parent agent",
+	})
+	defer func() {
+		_ = rec.FinishRun(context.Background(), devtools.RunResult{
+			Status:           "completed",
+			CompletionReason: "normal",
+		})
+	}()
 	history := []openai.ChatCompletionMessageParamUnion{
 		openai.SystemMessage(parentSystem),
 	}

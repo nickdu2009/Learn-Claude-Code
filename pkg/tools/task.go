@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/shared"
 )
@@ -52,6 +53,48 @@ func NewTaskHandler(runner TaskRunner) Handler {
 		}
 
 		description, _ := args["description"].(string)
-		return runner(ctx, prompt, description)
+		description = defaultTaskDescription(prompt, description)
+
+		runCtx := ctx
+		parentStepID := devtools.ParentStepFrom(ctx)
+		if parentStepID != "" {
+			childRecorder, err := devtools.RecorderFrom(ctx).SpawnChild(ctx, parentStepID, devtools.ChildRunMeta{
+				Kind:         "subagent",
+				Title:        description,
+				InputPreview: previewTaskPrompt(prompt, 160),
+			})
+			if err != nil {
+				return "", err
+			}
+			runCtx = devtools.WithRecorder(runCtx, childRecorder)
+		}
+
+		return runner(runCtx, prompt, description)
 	}
+}
+
+func defaultTaskDescription(prompt, description string) string {
+	description = strings.TrimSpace(description)
+	if description != "" {
+		return description
+	}
+	preview := previewTaskPrompt(prompt, 60)
+	if preview == "" {
+		return "subtask"
+	}
+	return preview
+}
+
+func previewTaskPrompt(prompt string, limit int) string {
+	prompt = strings.Join(strings.Fields(strings.TrimSpace(prompt)), " ")
+	if prompt == "" {
+		return ""
+	}
+	if limit <= 0 || len(prompt) <= limit {
+		return prompt
+	}
+	if limit <= 3 {
+		return prompt[:limit]
+	}
+	return prompt[:limit-3] + "..."
 }

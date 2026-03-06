@@ -25,6 +25,9 @@ import (
 //	ctx = devtools.WithRecorder(ctx, devtools.NewRecorderFromEnv())
 //	loop.Run(ctx, client, model, messages, registry)
 //
+// To automatically manage BeginRun/FinishRun for a single top-level task, use
+// RunWithManagedTrace at the application layer.
+//
 // When the environment variable AI_SDK_DEVTOOLS_STREAM=1 is set, each LLM call
 // is made via the streaming API so that raw_chunks are captured in the DevTools trace.
 func Run(
@@ -94,7 +97,8 @@ func Run(
 				return messages, fmt.Errorf("failed to parse tool args for %s: %w", tc.Function.Name, err)
 			}
 
-			output, err := registry.Dispatch(ctx, tc.Function.Name, args)
+			toolCtx := devtools.WithParentStep(ctx, stepID)
+			output, err := registry.Dispatch(toolCtx, tc.Function.Name, args)
 			if err != nil {
 				output = fmt.Sprintf("error: %s", err.Error())
 			}

@@ -23,32 +23,65 @@ import (
 )
 
 type Run struct {
-	ID        string `json:"id"`
-	StartedAt string `json:"started_at"`
+	ID               string  `json:"id"`
+	Kind             string  `json:"kind"`
+	Title            string  `json:"title"`
+	Status           string  `json:"status"`
+	CompletionReason *string `json:"completion_reason"`
+	StartedAt        string  `json:"started_at"`
+	FinishedAt       *string `json:"finished_at"`
+	ParentRunID      *string `json:"parent_run_id"`
+	ParentStepID     *string `json:"parent_step_id"`
+	Summary          *string `json:"summary"`
+	InputPreview     *string `json:"input_preview"`
+	StepCount        int     `json:"step_count"`
+	Error            *string `json:"error"`
 }
 
 type Step struct {
-	ID             string  `json:"id"`
-	RunID          string  `json:"run_id"`
-	StepNumber     int     `json:"step_number"`
-	Type           string  `json:"type"` // "generate" | "stream"
-	ModelID        string  `json:"model_id"`
-	Provider       *string `json:"provider"`
-	StartedAt      string  `json:"started_at"`
-	DurationMS     *int64  `json:"duration_ms"`
-	Input          string  `json:"input"`
-	Output         *string `json:"output"`
-	Usage          *string `json:"usage"`
-	Error          *string `json:"error"`
-	RawRequest     *string `json:"raw_request"`
-	RawResponse    *string `json:"raw_response"`
-	RawChunks      *string `json:"raw_chunks"`
-	ProviderOption *string `json:"provider_options"`
+	ID                string   `json:"id"`
+	RunID             string   `json:"run_id"`
+	StepNumber        int      `json:"step_number"`
+	Type              string   `json:"type"` // "generate" | "stream"
+	ModelID           string   `json:"model_id"`
+	Provider          *string  `json:"provider"`
+	StartedAt         string   `json:"started_at"`
+	DurationMS        *int64   `json:"duration_ms"`
+	Input             string   `json:"input"`
+	Output            *string  `json:"output"`
+	Usage             *string  `json:"usage"`
+	Error             *string  `json:"error"`
+	RawRequest        *string  `json:"raw_request"`
+	RawResponse       *string  `json:"raw_response"`
+	RawChunks         *string  `json:"raw_chunks"`
+	ProviderOption    *string  `json:"provider_options"`
+	LinkedChildRunIDs []string `json:"linked_child_run_ids"`
 }
 
 type database struct {
-	Runs  []Run  `json:"runs"`
-	Steps []Step `json:"steps"`
+	Version     int    `json:"version"`
+	GeneratedAt string `json:"generated_at"`
+	Runs        []Run  `json:"runs"`
+	Steps       []Step `json:"steps"`
+}
+
+type RunMeta struct {
+	Kind         string
+	Title        string
+	InputPreview string
+}
+
+type RunResult struct {
+	Status           string
+	CompletionReason string
+	Summary          string
+	Error            string
+}
+
+type ChildRunMeta struct {
+	Kind         string
+	Title        string
+	InputPreview string
 }
 
 // Recorder is the public interface for DevTools trace recording.
@@ -56,6 +89,10 @@ type database struct {
 // no-op placeholder. RecorderFrom(ctx) never returns nil — it returns Noop()
 // when no recorder was injected.
 type Recorder interface {
+	BeginRun(ctx context.Context, meta RunMeta) error
+	FinishRun(ctx context.Context, result RunResult) error
+	RunID() string
+	SpawnChild(ctx context.Context, parentStepID string, meta ChildRunMeta) (Recorder, error)
 	StartStep(ctx context.Context, stepType string, modelID string, provider string, input any, tools []openai.ChatCompletionToolParam, providerOptions any, requestParams ...openai.ChatCompletionNewParams) (stepID string, start time.Time)
 	FinishStep(ctx context.Context, stepID string, start time.Time, output any, usage any, stepErr error, rawRequest any, rawResponse any, rawChunks any)
 	RegisterToolCall(toolCallID, toolName string)
@@ -64,6 +101,14 @@ type Recorder interface {
 // noopRecorder is a Recorder that does nothing.
 type noopRecorder struct{}
 
+func (noopRecorder) BeginRun(context.Context, RunMeta) error { return nil }
+func (noopRecorder) FinishRun(context.Context, RunResult) error {
+	return nil
+}
+func (noopRecorder) RunID() string { return "" }
+func (noopRecorder) SpawnChild(context.Context, string, ChildRunMeta) (Recorder, error) {
+	return _noop, nil
+}
 func (noopRecorder) StartStep(context.Context, string, string, string, any, []openai.ChatCompletionToolParam, any, ...openai.ChatCompletionNewParams) (string, time.Time) {
 	return "", time.Time{}
 }
@@ -81,7 +126,7 @@ func Noop() Recorder { return _noop }
 type runRecorder struct {
 	mu sync.Mutex
 
-	enabled bool
+	store *recorderStore
 
 	runID     string
 	startedAt time.Time
@@ -89,11 +134,21 @@ type runRecorder struct {
 
 	toolNameByCallID map[string]string
 
-	dbDir  string
-	dbPath string
+	kind         string
+	title        string
+	parentRunID  *string
+	parentStepID *string
+	inputPreview *string
+}
 
-	port int
-	http *http.Client
+type recorderStore struct {
+	mu sync.Mutex
+
+	enabled bool
+	dbDir   string
+	dbPath  string
+	port    int
+	http    *http.Client
 }
 
 // NewRecorderFromEnv creates a Recorder from environment variables.
@@ -126,18 +181,146 @@ func NewRecorderFromEnv() Recorder {
 			dbDir = filepath.Join(root, filepath.Clean(v))
 		}
 	}
-	return &runRecorder{
-		enabled:          true,
-		runID:            generateRunID(),
-		startedAt:        time.Now(),
-		toolNameByCallID: make(map[string]string),
-		dbDir:            dbDir,
-		dbPath:           filepath.Join(dbDir, "generations.json"),
-		port:             port,
+	store := &recorderStore{
+		enabled: true,
+		dbDir:   dbDir,
+		dbPath:  filepath.Join(dbDir, "generations.json"),
+		port:    port,
 		http: &http.Client{
 			Timeout: 2 * time.Second,
 		},
 	}
+	return &runRecorder{
+		store:            store,
+		runID:            generateRunID(),
+		startedAt:        time.Now(),
+		toolNameByCallID: make(map[string]string),
+		kind:             "main",
+		title:            "main agent",
+	}
+}
+
+func (r *runRecorder) BeginRun(ctx context.Context, meta RunMeta) error {
+	if r == nil {
+		return nil
+	}
+
+	r.mu.Lock()
+	if strings.TrimSpace(meta.Kind) != "" {
+		r.kind = strings.TrimSpace(meta.Kind)
+	}
+	if strings.TrimSpace(meta.Title) != "" {
+		r.title = strings.TrimSpace(meta.Title)
+	}
+	if preview := strings.TrimSpace(meta.InputPreview); preview != "" {
+		r.inputPreview = stringPtr(preview)
+	}
+	run := r.snapshotRunLocked()
+	r.mu.Unlock()
+
+	return r.withDB(ctx, func(db *database) (bool, error) {
+		return upsertRun(db, run), nil
+	}, "run")
+}
+
+func (r *runRecorder) FinishRun(ctx context.Context, result RunResult) error {
+	if r == nil {
+		return nil
+	}
+
+	r.mu.Lock()
+	run := r.snapshotRunLocked()
+	status := strings.TrimSpace(result.Status)
+	if status == "" {
+		status = "completed"
+	}
+	run.Status = status
+	run.FinishedAt = stringPtr(time.Now().UTC().Format(time.RFC3339Nano))
+	if reason := strings.TrimSpace(result.CompletionReason); reason != "" {
+		run.CompletionReason = stringPtr(reason)
+	} else if status == "completed" {
+		run.CompletionReason = stringPtr("normal")
+	}
+	if summary := strings.TrimSpace(result.Summary); summary != "" {
+		run.Summary = stringPtr(summary)
+	}
+	if run.Status == "error" {
+		run.Error = stringPtr(strings.TrimSpace(result.Error))
+	}
+	r.mu.Unlock()
+
+	return r.withDB(ctx, func(db *database) (bool, error) {
+		return upsertRun(db, run), nil
+	}, "run-finish")
+}
+
+func (r *runRecorder) RunID() string {
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.runID
+}
+
+func (r *runRecorder) SpawnChild(ctx context.Context, parentStepID string, meta ChildRunMeta) (Recorder, error) {
+	if r == nil {
+		return _noop, nil
+	}
+	parentStepID = strings.TrimSpace(parentStepID)
+	if parentStepID == "" {
+		return nil, fmt.Errorf("parent step id is required")
+	}
+	if err := r.ensureRun(ctx); err != nil {
+		return nil, err
+	}
+
+	childKind := strings.TrimSpace(meta.Kind)
+	if childKind == "" {
+		childKind = "subagent"
+	}
+	childTitle := strings.TrimSpace(meta.Title)
+	if childTitle == "" {
+		childTitle = "subagent"
+	}
+	var previewPtr *string
+	if preview := strings.TrimSpace(meta.InputPreview); preview != "" {
+		previewPtr = stringPtr(preview)
+	}
+
+	parentRunID := r.RunID()
+	child := &runRecorder{
+		store:            r.store,
+		runID:            generateRunID(),
+		startedAt:        time.Now(),
+		toolNameByCallID: make(map[string]string),
+		kind:             childKind,
+		title:            childTitle,
+		parentRunID:      stringPtr(parentRunID),
+		parentStepID:     stringPtr(parentStepID),
+		inputPreview:     previewPtr,
+	}
+	childRun := child.snapshotRun()
+
+	if err := r.withDB(ctx, func(db *database) (bool, error) {
+		parentStep, ok := findStep(db.Steps, parentStepID)
+		if !ok {
+			return false, fmt.Errorf("parent step %q not found", parentStepID)
+		}
+		if parentStep.RunID != parentRunID {
+			return false, fmt.Errorf("parent step %q belongs to run %q, want %q", parentStepID, parentStep.RunID, parentRunID)
+		}
+		changed := upsertRun(db, childRun)
+		if !containsString(parentStep.LinkedChildRunIDs, childRun.ID) {
+			parentStep.LinkedChildRunIDs = append(parentStep.LinkedChildRunIDs, childRun.ID)
+			changed = true
+		}
+		return changed, nil
+	}, "run") ; err != nil {
+		return nil, err
+	}
+
+	return child, nil
 }
 
 func (r *runRecorder) RegisterToolCall(toolCallID, toolName string) {
@@ -149,18 +332,13 @@ func (r *runRecorder) RegisterToolCall(toolCallID, toolName string) {
 	r.mu.Unlock()
 }
 
-func (r *runRecorder) ensureRun(ctx context.Context) {
-	_ = r.withDB(ctx, func(db *database) bool {
-		for _, existing := range db.Runs {
-			if existing.ID == r.runID {
-				return false
-			}
-		}
-		db.Runs = append(db.Runs, Run{
-			ID:        r.runID,
-			StartedAt: r.startedAt.UTC().Format(time.RFC3339Nano),
-		})
-		return true
+func (r *runRecorder) ensureRun(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	run := r.snapshotRun()
+	return r.withDB(ctx, func(db *database) (bool, error) {
+		return upsertRun(db, run), nil
 	}, "run")
 }
 
@@ -180,7 +358,9 @@ func (r *runRecorder) StartStep(
 	providerOptions any,
 	requestParams ...openai.ChatCompletionNewParams,
 ) (stepID string, start time.Time) {
-	r.ensureRun(ctx)
+	if err := r.ensureRun(ctx); err != nil {
+		return "", time.Time{}
+	}
 	start = time.Now()
 	stepID = newUUID()
 
@@ -213,21 +393,22 @@ func (r *runRecorder) StartStep(
 
 	startedAt := start.UTC().Format(time.RFC3339Nano)
 	step := Step{
-		ID:          stepID,
-		RunID:       r.runID,
-		StepNumber:  stepNumber,
-		Type:        normalizeStepType(stepType),
-		ModelID:     modelID,
-		Provider:    providerPtr,
-		StartedAt:   startedAt,
-		DurationMS:  nil,
-		Input:       inputJSON,
-		Output:      nil,
-		Usage:       nil,
-		Error:       nil,
-		RawRequest:  nil,
-		RawResponse: nil,
-		RawChunks:   nil,
+		ID:                stepID,
+		RunID:             r.RunID(),
+		StepNumber:        stepNumber,
+		Type:              normalizeStepType(stepType),
+		ModelID:           modelID,
+		Provider:          providerPtr,
+		StartedAt:         startedAt,
+		DurationMS:        nil,
+		Input:             inputJSON,
+		Output:            nil,
+		Usage:             nil,
+		Error:             nil,
+		RawRequest:        nil,
+		RawResponse:       nil,
+		RawChunks:         nil,
+		LinkedChildRunIDs: []string{},
 		ProviderOption: func() *string {
 			if providerOptions == nil {
 				return nil
@@ -237,9 +418,12 @@ func (r *runRecorder) StartStep(
 		}(),
 	}
 
-	_ = r.withDB(ctx, func(db *database) bool {
+	_ = r.withDB(ctx, func(db *database) (bool, error) {
 		db.Steps = append(db.Steps, step)
-		return true
+		if run, ok := findRun(db.Runs, step.RunID); ok {
+			run.StepCount++
+		}
+		return true, nil
 	}, "step")
 	return stepID, start
 }
@@ -292,7 +476,7 @@ func (r *runRecorder) FinishStep(
 		rawChunksStr = &s
 	}
 
-	_ = r.withDB(ctx, func(db *database) bool {
+	_ = r.withDB(ctx, func(db *database) (bool, error) {
 		for i := range db.Steps {
 			if db.Steps[i].ID != stepID {
 				continue
@@ -304,9 +488,9 @@ func (r *runRecorder) FinishStep(
 			db.Steps[i].RawRequest = rawReqStr
 			db.Steps[i].RawResponse = rawRespStr
 			db.Steps[i].RawChunks = rawChunksStr
-			return true
+			return true, nil
 		}
-		return false
+		return false, nil
 	}, "step-update")
 }
 
@@ -320,19 +504,273 @@ func (r *runRecorder) snapshotToolNames() map[string]string {
 	return out
 }
 
+const traceVersion = 2
+
+func (r *runRecorder) snapshotRun() Run {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.snapshotRunLocked()
+}
+
+func (r *runRecorder) snapshotRunLocked() Run {
+	kind := strings.TrimSpace(r.kind)
+	if kind == "" {
+		kind = "main"
+	}
+	title := strings.TrimSpace(r.title)
+	if title == "" {
+		title = kind
+	}
+	return Run{
+		ID:           r.runID,
+		Kind:         kind,
+		Title:        title,
+		Status:       "running",
+		StartedAt:    r.startedAt.UTC().Format(time.RFC3339Nano),
+		ParentRunID:  cloneStringPtr(r.parentRunID),
+		ParentStepID: cloneStringPtr(r.parentStepID),
+		InputPreview: cloneStringPtr(r.inputPreview),
+	}
+}
+
+func newTraceFile() database {
+	return database{
+		Version: traceVersion,
+		Runs:    []Run{},
+		Steps:   []Step{},
+	}
+}
+
+func normalizeTraceFile(db database) database {
+	db.Version = traceVersion
+	if db.Runs == nil {
+		db.Runs = []Run{}
+	}
+	if db.Steps == nil {
+		db.Steps = []Step{}
+	}
+	for i := range db.Steps {
+		if db.Steps[i].LinkedChildRunIDs == nil {
+			db.Steps[i].LinkedChildRunIDs = []string{}
+		}
+	}
+	return db
+}
+
+func upsertRun(db *database, run Run) bool {
+	for i := range db.Runs {
+		if db.Runs[i].ID != run.ID {
+			continue
+		}
+		run.StepCount = db.Runs[i].StepCount
+		db.Runs[i] = mergeRun(db.Runs[i], run)
+		return true
+	}
+	db.Runs = append(db.Runs, run)
+	return true
+}
+
+func mergeRun(existing Run, incoming Run) Run {
+	if incoming.Kind != "" {
+		existing.Kind = incoming.Kind
+	}
+	if incoming.Title != "" {
+		existing.Title = incoming.Title
+	}
+	if incoming.Status != "" {
+		existing.Status = incoming.Status
+	}
+	if incoming.CompletionReason != nil {
+		existing.CompletionReason = cloneStringPtr(incoming.CompletionReason)
+	}
+	if incoming.StartedAt != "" {
+		existing.StartedAt = incoming.StartedAt
+	}
+	if incoming.FinishedAt != nil {
+		existing.FinishedAt = cloneStringPtr(incoming.FinishedAt)
+	}
+	if incoming.ParentRunID != nil || existing.ParentRunID == nil {
+		existing.ParentRunID = cloneStringPtr(incoming.ParentRunID)
+	}
+	if incoming.ParentStepID != nil || existing.ParentStepID == nil {
+		existing.ParentStepID = cloneStringPtr(incoming.ParentStepID)
+	}
+	if incoming.Summary != nil {
+		existing.Summary = cloneStringPtr(incoming.Summary)
+	}
+	if incoming.InputPreview != nil {
+		existing.InputPreview = cloneStringPtr(incoming.InputPreview)
+	}
+	if incoming.Error != nil {
+		existing.Error = cloneStringPtr(incoming.Error)
+	}
+	if incoming.StepCount > existing.StepCount {
+		existing.StepCount = incoming.StepCount
+	}
+	return existing
+}
+
+func findRun(runs []Run, id string) (*Run, bool) {
+	for i := range runs {
+		if runs[i].ID == id {
+			return &runs[i], true
+		}
+	}
+	return nil, false
+}
+
+func findStep(steps []Step, id string) (*Step, bool) {
+	for i := range steps {
+		if steps[i].ID == id {
+			return &steps[i], true
+		}
+	}
+	return nil, false
+}
+
+func validateTraceFile(db database) error {
+	if db.Version != traceVersion {
+		return fmt.Errorf("unsupported trace version %d", db.Version)
+	}
+
+	runByID := make(map[string]Run, len(db.Runs))
+	for _, run := range db.Runs {
+		if strings.TrimSpace(run.ID) == "" {
+			return fmt.Errorf("run id is required")
+		}
+		if _, exists := runByID[run.ID]; exists {
+			return fmt.Errorf("duplicate run id %q", run.ID)
+		}
+		runByID[run.ID] = run
+	}
+
+	stepByID := make(map[string]Step, len(db.Steps))
+	stepNumbersByRun := make(map[string]map[int]struct{}, len(db.Runs))
+	stepCountByRun := make(map[string]int, len(db.Runs))
+	for _, step := range db.Steps {
+		if strings.TrimSpace(step.ID) == "" {
+			return fmt.Errorf("step id is required")
+		}
+		if _, exists := stepByID[step.ID]; exists {
+			return fmt.Errorf("duplicate step id %q", step.ID)
+		}
+		if _, exists := runByID[step.RunID]; !exists {
+			return fmt.Errorf("step %q references missing run %q", step.ID, step.RunID)
+		}
+		if stepNumbersByRun[step.RunID] == nil {
+			stepNumbersByRun[step.RunID] = make(map[int]struct{})
+		}
+		if _, exists := stepNumbersByRun[step.RunID][step.StepNumber]; exists {
+			return fmt.Errorf("duplicate step number %d in run %q", step.StepNumber, step.RunID)
+		}
+		stepNumbersByRun[step.RunID][step.StepNumber] = struct{}{}
+		stepCountByRun[step.RunID]++
+		stepByID[step.ID] = step
+	}
+
+	for _, run := range db.Runs {
+		if run.StepCount != stepCountByRun[run.ID] {
+			return fmt.Errorf("run %q step_count mismatch: got %d want %d", run.ID, run.StepCount, stepCountByRun[run.ID])
+		}
+		switch run.Status {
+		case "", "running", "completed", "error":
+		default:
+			return fmt.Errorf("run %q has invalid status %q", run.ID, run.Status)
+		}
+		if run.Status == "running" && run.FinishedAt != nil {
+			return fmt.Errorf("running run %q must not have finished_at", run.ID)
+		}
+		if (run.Status == "completed" || run.Status == "error") && run.FinishedAt == nil {
+			return fmt.Errorf("terminal run %q must have finished_at", run.ID)
+		}
+		if (run.ParentRunID == nil) != (run.ParentStepID == nil) {
+			return fmt.Errorf("run %q must set parent_run_id and parent_step_id together", run.ID)
+		}
+		if run.Kind == "subagent" {
+			if run.ParentRunID == nil || run.ParentStepID == nil {
+				return fmt.Errorf("subagent run %q must include parent linkage", run.ID)
+			}
+		}
+		if run.ParentRunID != nil {
+			if _, exists := runByID[*run.ParentRunID]; !exists {
+				return fmt.Errorf("run %q references missing parent run %q", run.ID, *run.ParentRunID)
+			}
+			parentStep, exists := stepByID[derefString(run.ParentStepID)]
+			if !exists {
+				return fmt.Errorf("run %q references missing parent step %q", run.ID, derefString(run.ParentStepID))
+			}
+			if parentStep.RunID != derefString(run.ParentRunID) {
+				return fmt.Errorf("run %q parent step %q belongs to run %q, want %q", run.ID, parentStep.ID, parentStep.RunID, derefString(run.ParentRunID))
+			}
+		}
+	}
+
+	for _, step := range db.Steps {
+		for _, childRunID := range step.LinkedChildRunIDs {
+			child, exists := runByID[childRunID]
+			if !exists {
+				return fmt.Errorf("step %q links missing child run %q", step.ID, childRunID)
+			}
+			if derefString(child.ParentStepID) != step.ID {
+				return fmt.Errorf("step %q links child run %q but child points to parent step %q", step.ID, childRunID, derefString(child.ParentStepID))
+			}
+		}
+	}
+
+	return nil
+}
+
+func cloneStringPtr(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	return &out
+}
+
+func stringPtr(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *runRecorder) withDB(
 	ctx context.Context,
-	mutate func(db *database) (changed bool),
+	mutate func(db *database) (changed bool, err error),
 	notifyEvent string,
 ) error {
+	if r == nil || r.store == nil {
+		return nil
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
 
 	db := r.readDBLocked()
-	changed := mutate(&db)
+	changed, err := mutate(&db)
+	if err != nil {
+		return err
+	}
 	if !changed {
 		return nil
 	}
@@ -344,33 +782,45 @@ func (r *runRecorder) withDB(
 }
 
 func (r *runRecorder) readDBLocked() database {
-	b, err := os.ReadFile(r.dbPath)
+	if r.store == nil {
+		return newTraceFile()
+	}
+	b, err := os.ReadFile(r.store.dbPath)
 	if err != nil {
-		return database{Runs: []Run{}, Steps: []Step{}}
+		return newTraceFile()
 	}
 	var db database
 	if err := json.Unmarshal(b, &db); err != nil {
-		return database{Runs: []Run{}, Steps: []Step{}}
+		return newTraceFile()
 	}
-	if db.Runs == nil {
-		db.Runs = []Run{}
+	if db.Version != traceVersion {
+		return newTraceFile()
 	}
-	if db.Steps == nil {
-		db.Steps = []Step{}
-	}
-	return db
+	return normalizeTraceFile(db)
 }
 
 func (r *runRecorder) writeDBLocked(db database) error {
-	if err := os.MkdirAll(r.dbDir, 0o755); err != nil {
+	if r.store == nil {
+		return nil
+	}
+	db = normalizeTraceFile(db)
+	db.GeneratedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := validateTraceFile(db); err != nil {
 		return err
 	}
-	ensureGitignoreForDir(r.dbDir)
+	if err := os.MkdirAll(r.store.dbDir, 0o755); err != nil {
+		return err
+	}
+	ensureGitignoreForDir(r.store.dbDir)
 	b, err := json.MarshalIndent(db, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(r.dbPath, b, 0o644)
+	tmpPath := r.store.dbPath + ".tmp"
+	if err := os.WriteFile(tmpPath, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, r.store.dbPath)
 }
 
 func ensureGitignoreForDir(dbDir string) {
@@ -443,7 +893,7 @@ func findGitRoot(start string) string {
 }
 
 func (r *runRecorder) notify(ctx context.Context, event string) {
-	if r == nil || !r.enabled || r.http == nil {
+	if r == nil || r.store == nil || !r.store.enabled || r.store.http == nil {
 		return
 	}
 	if event == "" {
@@ -464,7 +914,7 @@ func (r *runRecorder) notify(ctx context.Context, event string) {
 		"timestamp": time.Now().UnixMilli(),
 	}
 	b := mustJSONBytes(reqBody)
-	url := fmt.Sprintf("http://localhost:%d/api/notify", r.port)
+	url := fmt.Sprintf("http://localhost:%d/api/notify", r.store.port)
 	for attempt := 0; attempt < 3; attempt++ {
 		req, err := http.NewRequestWithContext(notifyCtx, http.MethodPost, url, bytes.NewReader(b))
 		if err != nil {
@@ -472,7 +922,7 @@ func (r *runRecorder) notify(ctx context.Context, event string) {
 		}
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := r.http.Do(req)
+		resp, err := r.store.http.Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
 			return
@@ -789,6 +1239,7 @@ func newUUID() string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 type recorderKey struct{}
+type parentStepKey struct{}
 
 // WithRecorder returns a child context carrying the given Recorder.
 func WithRecorder(ctx context.Context, rec Recorder) context.Context {
@@ -802,4 +1253,15 @@ func RecorderFrom(ctx context.Context) Recorder {
 		return rec
 	}
 	return _noop
+}
+
+// WithParentStep returns a child context carrying the current parent step id.
+func WithParentStep(ctx context.Context, stepID string) context.Context {
+	return context.WithValue(ctx, parentStepKey{}, strings.TrimSpace(stepID))
+}
+
+// ParentStepFrom extracts the parent step id from context.
+func ParentStepFrom(ctx context.Context) string {
+	stepID, _ := ctx.Value(parentStepKey{}).(string)
+	return strings.TrimSpace(stepID)
 }
