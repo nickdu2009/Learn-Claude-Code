@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
 	"github.com/nickdu2009/learn-claude-code/pkg/loop"
 	"github.com/nickdu2009/learn-claude-code/pkg/tools"
 	"github.com/openai/openai-go"
@@ -93,7 +92,6 @@ func TestIntegration_CreatePythonProject(t *testing.T) {
 		model,
 		history,
 		registry,
-		devtools.NewRunRecorderFromEnv(),
 	)
 	if err != nil {
 		t.Fatalf("agent loop error: %v", err)
@@ -183,7 +181,6 @@ func TestIntegration_NagInjectedAfterThreeRoundsWithoutTodo(t *testing.T) {
 		model,
 		history,
 		registry,
-		devtools.NewRunRecorderFromEnv(),
 	)
 	if err != nil {
 		t.Fatalf("agent loop error: %v", err)

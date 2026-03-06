@@ -387,7 +387,7 @@ func TestLoop_TodoNagResetAfterTodoCall(t *testing.T) {
 		openai.UserMessage("run steps"),
 	}
 
-	_, err := RunWithTodoNag(context.Background(), client, "mock-model", initial, registry, nil)
+	_, err := RunWithTodoNag(context.Background(), client, "mock-model", initial, registry)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestLoop_TodoNagReminderInjected(t *testing.T) {
 		openai.UserMessage("run a few steps"),
 	}
 
-	_, err := RunWithTodoNag(context.Background(), client, "mock-model", initial, registry, nil)
+	_, err := RunWithTodoNag(context.Background(), client, "mock-model", initial, registry)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

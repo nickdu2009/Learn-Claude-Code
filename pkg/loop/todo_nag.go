@@ -18,20 +18,19 @@ const (
 	defaultTodoNagMessage     = "Update your todos."
 )
 
-// RunWithTodoNag executes an agent loop like RunWithRecorder, but injects a nag
-// reminder when the model goes N rounds without calling the todo tool.
+// RunWithTodoNag executes an agent loop like Run, but injects a nag reminder
+// when the model goes N rounds without calling the todo tool.
 //
-// This function is intentionally additive: it does not change the behavior of
-// Run / RunWithRecorder used by earlier sessions.
+// The RunRecorder is obtained from ctx via devtools.RecorderFrom (see Run).
 func RunWithTodoNag(
 	ctx context.Context,
 	client *openai.Client,
 	model string,
 	messages []openai.ChatCompletionMessageParamUnion,
 	registry *tools.Registry,
-	rec *devtools.RunRecorder,
 ) ([]openai.ChatCompletionMessageParamUnion, error) {
-	ctx = devtools.WithRecorder(ctx, rec)
+	ctx = ensureRecorder(ctx)
+	rec := devtools.RecorderFrom(ctx)
 	provider := inferProviderFromEnv()
 	useStream := isStreamingEnabled()
 

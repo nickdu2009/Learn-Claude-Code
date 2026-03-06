@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
-	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
 	"github.com/nickdu2009/learn-claude-code/pkg/loop"
 	"github.com/nickdu2009/learn-claude-code/pkg/tools"
 	"github.com/openai/openai-go"
@@ -68,13 +67,12 @@ func main() {
 
 		// 调用核心循环
 		var err error
-		history, err = loop.RunWithRecorder(
+		history, err = loop.Run(
 			context.Background(),
 			client,
 			model,
 			history,
 			registry,
-			devtools.NewRunRecorderFromEnv(),
 		)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "loop error:", err)

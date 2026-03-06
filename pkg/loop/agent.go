@@ -19,6 +19,16 @@ import (
 
 // Run executes the agent loop until the model stops requesting tool calls.
 // messages is the conversation history (modified in place).
+//
+// The RunRecorder is obtained from ctx via devtools.RecorderFrom. If no recorder
+// is present, one is created automatically from environment variables. Callers who
+// need a specific recorder should inject it beforehand:
+//
+//	ctx = devtools.WithRecorder(ctx, myRecorder)
+//	loop.Run(ctx, client, model, messages, registry)
+//
+// When the environment variable AI_SDK_DEVTOOLS_STREAM=1 is set, each LLM call
+// is made via the streaming API so that raw_chunks are captured in the DevTools trace.
 func Run(
 	ctx context.Context,
 	client *openai.Client,
@@ -26,23 +36,8 @@ func Run(
 	messages []openai.ChatCompletionMessageParamUnion,
 	registry *tools.Registry,
 ) ([]openai.ChatCompletionMessageParamUnion, error) {
-	return RunWithRecorder(ctx, client, model, messages, registry, devtools.NewRunRecorderFromEnv())
-}
-
-// RunWithRecorder executes the agent loop and records DevTools steps into the given recorder (optional).
-// When recorder is reused across calls, multiple rounds will be grouped into the same DevTools run.
-//
-// When the environment variable AI_SDK_DEVTOOLS_STREAM=1 is set, each LLM call is made via the
-// streaming API so that raw_chunks are captured in the DevTools trace.
-func RunWithRecorder(
-	ctx context.Context,
-	client *openai.Client,
-	model string,
-	messages []openai.ChatCompletionMessageParamUnion,
-	registry *tools.Registry,
-	rec *devtools.RunRecorder,
-) ([]openai.ChatCompletionMessageParamUnion, error) {
-	ctx = devtools.WithRecorder(ctx, rec)
+	ctx = ensureRecorder(ctx)
+	rec := devtools.RecorderFrom(ctx)
 	provider := inferProviderFromEnv()
 	useStream := isStreamingEnabled()
 
@@ -119,6 +114,15 @@ func RunWithRecorder(
 			messages = append(messages, openai.ToolMessage(output, tc.ID))
 		}
 	}
+}
+
+// ensureRecorder checks whether ctx already carries a RunRecorder. If not, it
+// creates one from environment variables and returns a derived context.
+func ensureRecorder(ctx context.Context) context.Context {
+	if devtools.RecorderFrom(ctx) != nil {
+		return ctx
+	}
+	return devtools.WithRecorder(ctx, devtools.NewRunRecorderFromEnv())
 }
 
 // isStreamingEnabled returns true when AI_SDK_DEVTOOLS_STREAM env var is truthy.
