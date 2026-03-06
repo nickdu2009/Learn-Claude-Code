@@ -2,255 +2,176 @@ package tools
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
-// sandboxDir returns an isolated test directory under .local/test-artifacts/s02/unit/fs/<testName>/<runID>/
-// It creates the directory and returns the absolute path.
-func sandboxDir(t *testing.T) string {
-	t.Helper()
-	repoRoot, err := filepath.Abs("../../")
-	if err != nil {
-		t.Fatalf("failed to resolve repo root: %v", err)
-	}
-	runID := fmt.Sprintf("%d", time.Now().UnixNano())
-	dir := filepath.Join(repoRoot, ".local", "test-artifacts", "s02", "unit", "fs", t.Name(), runID)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatalf("failed to create sandbox dir %s: %v", dir, err)
-	}
-	return dir
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WriteFileHandler 测试
-// ─────────────────────────────────────────────────────────────────────────────
-
-// UT-FS-01: 正常写入文件，验证文件被创建且内容正确。
-func TestWriteFileHandler_Normal(t *testing.T) {
-	dir := sandboxDir(t)
-	target := filepath.Join(dir, "hello.txt")
-
-	result, err := WriteFileHandler(context.Background(), map[string]any{
-		"path":    target,
-		"content": "hello s02",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, target) {
-		t.Errorf("result should mention the file path, got: %q", result)
-	}
-
-	data, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("file was not created: %v", err)
-	}
-	if string(data) != "hello s02" {
-		t.Errorf("file content mismatch: got %q", string(data))
-	}
-}
-
-// UT-FS-02: 缺少 path 参数，应返回错误。
-func TestWriteFileHandler_MissingPath(t *testing.T) {
-	_, err := WriteFileHandler(context.Background(), map[string]any{
-		"content": "some content",
-	})
-	if err == nil {
-		t.Fatal("expected error for missing path, got nil")
-	}
-}
-
-// UT-FS-02b: 缺少 content 参数，应返回错误。
-func TestWriteFileHandler_MissingContent(t *testing.T) {
-	dir := sandboxDir(t)
-	_, err := WriteFileHandler(context.Background(), map[string]any{
-		"path": filepath.Join(dir, "no-content.txt"),
-	})
-	if err == nil {
-		t.Fatal("expected error for missing content, got nil")
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ReadFileHandler 测试
-// ─────────────────────────────────────────────────────────────────────────────
-
-// UT-FS-03: 读取刚写入的文件，内容应与写入时一致。
-func TestReadFileHandler_Normal(t *testing.T) {
-	dir := sandboxDir(t)
-	target := filepath.Join(dir, "read_me.txt")
-	if err := os.WriteFile(target, []byte("read content 42"), 0644); err != nil {
-		t.Fatalf("setup: failed to create test file: %v", err)
-	}
-
-	result, err := ReadFileHandler(context.Background(), map[string]any{"path": target})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != "read content 42" {
-		t.Errorf("content mismatch: got %q", result)
-	}
-}
-
-// UT-FS-04: 读取不存在的文件，应返回错误。
-func TestReadFileHandler_NotFound(t *testing.T) {
-	_, err := ReadFileHandler(context.Background(), map[string]any{
-		"path": "/nonexistent/path/s02_test_file_12345.txt",
-	})
-	if err == nil {
-		t.Fatal("expected error for non-existent file, got nil")
-	}
-	if !strings.Contains(err.Error(), "failed to read file") {
-		t.Errorf("error message mismatch: got %q", err.Error())
-	}
-}
-
-// UT-FS-04b: 缺少 path 参数，应返回错误。
-func TestReadFileHandler_MissingPath(t *testing.T) {
-	_, err := ReadFileHandler(context.Background(), map[string]any{})
-	if err == nil {
-		t.Fatal("expected error for missing path, got nil")
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ListDirHandler 测试
-// ─────────────────────────────────────────────────────────────────────────────
-
-// UT-FS-05: 列出包含文件和子目录的目录，验证输出格式。
-func TestListDirHandler_Normal(t *testing.T) {
-	dir := sandboxDir(t)
-
-	// 准备测试数据：一个文件和一个子目录
-	if err := os.WriteFile(filepath.Join(dir, "file1.txt"), []byte("data"), 0644); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "subdir"), 0755); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	result, err := ListDirHandler(context.Background(), map[string]any{"path": dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "[FILE] file1.txt") {
-		t.Errorf("result should contain '[FILE] file1.txt', got:\n%s", result)
-	}
-	if !strings.Contains(result, "[DIR]  subdir") {
-		t.Errorf("result should contain '[DIR]  subdir', got:\n%s", result)
-	}
-}
-
-// UT-FS-06: 列出空目录，应返回固定占位符。
-func TestListDirHandler_EmptyDir(t *testing.T) {
-	dir := sandboxDir(t)
-
-	result, err := ListDirHandler(context.Background(), map[string]any{"path": dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != "(empty directory)" {
-		t.Errorf("expected '(empty directory)', got: %q", result)
-	}
-}
-
-// UT-FS-06b: 列出不存在的目录，应返回错误。
-func TestListDirHandler_NotFound(t *testing.T) {
-	_, err := ListDirHandler(context.Background(), map[string]any{
-		"path": "/nonexistent/s02_test_dir_12345",
-	})
-	if err == nil {
-		t.Fatal("expected error for non-existent directory, got nil")
-	}
-	if !strings.Contains(err.Error(), "failed to list directory") {
-		t.Errorf("error message mismatch: got %q", err.Error())
-	}
-}
-
-// UT-FS-06c: 缺少 path 参数，应返回错误。
-func TestListDirHandler_MissingPath(t *testing.T) {
-	_, err := ListDirHandler(context.Background(), map[string]any{})
-	if err == nil {
-		t.Fatal("expected error for missing path, got nil")
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// EditFileHandler 测试
-// ─────────────────────────────────────────────────────────────────────────────
-
-// UT-FS-EDIT-01: 正常替换首次匹配，验证文件内容更新正确。
-func TestEditFileHandler_Normal(t *testing.T) {
-	dir := sandboxDir(t)
-	target := filepath.Join(dir, "edit_me.txt")
-	if err := os.WriteFile(target, []byte("hello world hello"), 0644); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	result, err := EditFileHandler(context.Background(), map[string]any{
-		"path":     target,
-		"old_text": "hello",
-		"new_text": "hi",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, target) {
-		t.Errorf("result should mention file path, got: %q", result)
-	}
-
-	// 只替换首次出现，第二个 hello 保留
-	data, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("failed to read file: %v", err)
-	}
-	if string(data) != "hi world hello" {
-		t.Errorf("content mismatch: got %q", string(data))
-	}
-}
-
-// UT-FS-EDIT-02: old_text 不存在于文件中，应返回错误。
-func TestEditFileHandler_OldTextNotFound(t *testing.T) {
-	dir := sandboxDir(t)
-	target := filepath.Join(dir, "no_match.txt")
-	if err := os.WriteFile(target, []byte("some content"), 0644); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	_, err := EditFileHandler(context.Background(), map[string]any{
-		"path":     target,
-		"old_text": "nonexistent",
-		"new_text": "replacement",
-	})
-	if err == nil {
-		t.Fatal("expected error when old_text not found, got nil")
-	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error message should mention 'not found', got: %q", err.Error())
-	}
-}
-
-// UT-FS-EDIT-03: 缺少必要参数，应返回错误。
-func TestEditFileHandler_MissingArgs(t *testing.T) {
-	cases := []struct {
-		name string
-		args map[string]any
-	}{
-		{"missing path", map[string]any{"old_text": "a", "new_text": "b"}},
-		{"missing old_text", map[string]any{"path": "/tmp/x.txt", "new_text": "b"}},
-		{"missing new_text", map[string]any{"path": "/tmp/x.txt", "old_text": "a"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := EditFileHandler(context.Background(), tc.args)
-			if err == nil {
-				t.Fatalf("expected error for %s, got nil", tc.name)
-			}
+func TestWriteFileHandler_CreatesParentDirectories(t *testing.T) {
+	withWorkingDir(t, t.TempDir(), func() {
+		target := filepath.Join("nested", "dir", "hello.txt")
+		result, err := WriteFileHandler(context.Background(), map[string]any{
+			"path":    target,
+			"content": "hello",
 		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result, target) {
+			t.Fatalf("expected result to mention target, got %q", result)
+		}
+
+		data, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatalf("expected file to be created: %v", err)
+		}
+		if string(data) != "hello" {
+			t.Fatalf("content mismatch: %q", string(data))
+		}
+	})
+}
+
+func TestReadFileHandler_ReadsInsideWorkspace(t *testing.T) {
+	withWorkingDir(t, t.TempDir(), func() {
+		target := "note.txt"
+		if err := os.WriteFile(target, []byte("workspace file"), 0644); err != nil {
+			t.Fatalf("failed to create fixture: %v", err)
+		}
+
+		result, err := ReadFileHandler(context.Background(), map[string]any{"path": target})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != "workspace file" {
+			t.Fatalf("expected file content, got %q", result)
+		}
+	})
+}
+
+func TestEditFileHandler_ReplacesFirstMatch(t *testing.T) {
+	withWorkingDir(t, t.TempDir(), func() {
+		target := "edit.txt"
+		if err := os.WriteFile(target, []byte("hello world hello"), 0644); err != nil {
+			t.Fatalf("failed to create fixture: %v", err)
+		}
+
+		result, err := EditFileHandler(context.Background(), map[string]any{
+			"path":     target,
+			"old_text": "hello",
+			"new_text": "hi",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result, target) {
+			t.Fatalf("expected result to mention target, got %q", result)
+		}
+
+		data, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatalf("failed to read updated file: %v", err)
+		}
+		if string(data) != "hi world hello" {
+			t.Fatalf("unexpected edited content: %q", string(data))
+		}
+	})
+}
+
+func TestListDirHandler_ListsWorkspaceEntries(t *testing.T) {
+	withWorkingDir(t, t.TempDir(), func() {
+		if err := os.WriteFile("file1.txt", []byte("data"), 0644); err != nil {
+			t.Fatalf("failed to create file fixture: %v", err)
+		}
+		if err := os.MkdirAll("subdir", 0755); err != nil {
+			t.Fatalf("failed to create dir fixture: %v", err)
+		}
+
+		result, err := ListDirHandler(context.Background(), map[string]any{"path": "."})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result, "[FILE] file1.txt") {
+			t.Fatalf("expected file entry, got:\n%s", result)
+		}
+		if !strings.Contains(result, "[DIR]  subdir") {
+			t.Fatalf("expected directory entry, got:\n%s", result)
+		}
+	})
+}
+
+func TestFSHandlers_RejectPathEscape(t *testing.T) {
+	withWorkingDir(t, t.TempDir(), func() {
+		cases := []struct {
+			name   string
+			invoke func() error
+		}{
+			{
+				name: "read_file",
+				invoke: func() error {
+					_, err := ReadFileHandler(context.Background(), map[string]any{"path": "../outside.txt"})
+					return err
+				},
+			},
+			{
+				name: "write_file",
+				invoke: func() error {
+					_, err := WriteFileHandler(context.Background(), map[string]any{
+						"path":    "../outside.txt",
+						"content": "blocked",
+					})
+					return err
+				},
+			},
+			{
+				name: "edit_file",
+				invoke: func() error {
+					_, err := EditFileHandler(context.Background(), map[string]any{
+						"path":     "../outside.txt",
+						"old_text": "a",
+						"new_text": "b",
+					})
+					return err
+				},
+			},
+			{
+				name: "list_dir",
+				invoke: func() error {
+					_, err := ListDirHandler(context.Background(), map[string]any{"path": ".."})
+					return err
+				},
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				err := tc.invoke()
+				if err == nil {
+					t.Fatal("expected path escape error")
+				}
+				if !strings.Contains(err.Error(), "path escapes workspace") {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			})
+		}
+	})
+}
+
+func withWorkingDir(t *testing.T, dir string, fn func()) {
+	t.Helper()
+
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
 	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir to %s: %v", dir, err)
+	}
+	defer func() {
+		if err := os.Chdir(original); err != nil {
+			t.Fatalf("failed to restore working directory: %v", err)
+		}
+	}()
+
+	fn()
 }

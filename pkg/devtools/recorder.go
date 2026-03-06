@@ -51,9 +51,34 @@ type database struct {
 	Steps []Step `json:"steps"`
 }
 
-// RunRecorder represents one DevTools "run" (a multi-step interaction).
+// Recorder is the public interface for DevTools trace recording.
+// Use NewRecorderFromEnv to create a real implementation, or Noop() for a
+// no-op placeholder. RecorderFrom(ctx) never returns nil — it returns Noop()
+// when no recorder was injected.
+type Recorder interface {
+	StartStep(ctx context.Context, stepType string, modelID string, provider string, input any, tools []openai.ChatCompletionToolParam, providerOptions any, requestParams ...openai.ChatCompletionNewParams) (stepID string, start time.Time)
+	FinishStep(ctx context.Context, stepID string, start time.Time, output any, usage any, stepErr error, rawRequest any, rawResponse any, rawChunks any)
+	RegisterToolCall(toolCallID, toolName string)
+}
+
+// noopRecorder is a Recorder that does nothing.
+type noopRecorder struct{}
+
+func (noopRecorder) StartStep(context.Context, string, string, string, any, []openai.ChatCompletionToolParam, any, ...openai.ChatCompletionNewParams) (string, time.Time) {
+	return "", time.Time{}
+}
+func (noopRecorder) FinishStep(context.Context, string, time.Time, any, any, error, any, any, any) {
+}
+func (noopRecorder) RegisterToolCall(string, string) {}
+
+var _noop Recorder = noopRecorder{}
+
+// Noop returns a Recorder that silently discards all calls.
+func Noop() Recorder { return _noop }
+
+// runRecorder represents one DevTools "run" (a multi-step interaction).
 // It is safe for concurrent use.
-type RunRecorder struct {
+type runRecorder struct {
 	mu sync.Mutex
 
 	enabled bool
@@ -71,17 +96,18 @@ type RunRecorder struct {
 	http *http.Client
 }
 
-// NewRunRecorderFromEnv creates a recorder when AI_SDK_DEVTOOLS is truthy.
+// NewRecorderFromEnv creates a Recorder from environment variables.
+// Returns Noop() when AI_SDK_DEVTOOLS is not truthy.
 //
 // Env:
-// - AI_SDK_DEVTOOLS: 1/true/yes/on to enable
-// - AI_SDK_DEVTOOLS_PORT: viewer port (default 4983)
-// - AI_SDK_DEVTOOLS_DIR: directory to write generations.json into
+//   - AI_SDK_DEVTOOLS: 1/true/yes/on to enable
+//   - AI_SDK_DEVTOOLS_PORT: viewer port (default 4983)
+//   - AI_SDK_DEVTOOLS_DIR: directory to write generations.json into
 //   - if absolute: used as-is
 //   - if relative: resolved under the git root
-func NewRunRecorderFromEnv() *RunRecorder {
+func NewRecorderFromEnv() Recorder {
 	if !envTruthy("AI_SDK_DEVTOOLS") {
-		return nil
+		return _noop
 	}
 	port := 4983
 	if v := os.Getenv("AI_SDK_DEVTOOLS_PORT"); v != "" {
@@ -100,7 +126,7 @@ func NewRunRecorderFromEnv() *RunRecorder {
 			dbDir = filepath.Join(root, filepath.Clean(v))
 		}
 	}
-	return &RunRecorder{
+	return &runRecorder{
 		enabled:          true,
 		runID:            generateRunID(),
 		startedAt:        time.Now(),
@@ -114,15 +140,8 @@ func NewRunRecorderFromEnv() *RunRecorder {
 	}
 }
 
-func (r *RunRecorder) RunID() string {
-	if r == nil {
-		return ""
-	}
-	return r.runID
-}
-
-func (r *RunRecorder) RegisterToolCall(toolCallID, toolName string) {
-	if r == nil || !r.enabled || toolCallID == "" || toolName == "" {
+func (r *runRecorder) RegisterToolCall(toolCallID, toolName string) {
+	if toolCallID == "" || toolName == "" {
 		return
 	}
 	r.mu.Lock()
@@ -130,10 +149,7 @@ func (r *RunRecorder) RegisterToolCall(toolCallID, toolName string) {
 	r.mu.Unlock()
 }
 
-func (r *RunRecorder) EnsureRun(ctx context.Context) {
-	if r == nil || !r.enabled {
-		return
-	}
+func (r *runRecorder) ensureRun(ctx context.Context) {
 	_ = r.withDB(ctx, func(db *database) bool {
 		for _, existing := range db.Runs {
 			if existing.ID == r.runID {
@@ -154,7 +170,7 @@ func (r *RunRecorder) EnsureRun(ctx context.Context) {
 // openai.ChatCompletionNewParams value; sampling parameters (Temperature, TopP,
 // MaxTokens, MaxCompletionTokens, ToolChoice) are extracted and written into
 // the step input so the Viewer StepConfigBar can display them.
-func (r *RunRecorder) StartStep(
+func (r *runRecorder) StartStep(
 	ctx context.Context,
 	stepType string,
 	modelID string,
@@ -164,10 +180,7 @@ func (r *RunRecorder) StartStep(
 	providerOptions any,
 	requestParams ...openai.ChatCompletionNewParams,
 ) (stepID string, start time.Time) {
-	if r == nil || !r.enabled {
-		return "", time.Time{}
-	}
-	r.EnsureRun(ctx)
+	r.ensureRun(ctx)
 	start = time.Now()
 	stepID = newUUID()
 
@@ -231,7 +244,7 @@ func (r *RunRecorder) StartStep(
 	return stepID, start
 }
 
-func (r *RunRecorder) FinishStep(
+func (r *runRecorder) FinishStep(
 	ctx context.Context,
 	stepID string,
 	start time.Time,
@@ -242,7 +255,7 @@ func (r *RunRecorder) FinishStep(
 	rawResponse any,
 	rawChunks any,
 ) {
-	if r == nil || !r.enabled || stepID == "" || start.IsZero() {
+	if stepID == "" || start.IsZero() {
 		return
 	}
 	duration := time.Since(start).Milliseconds()
@@ -297,7 +310,7 @@ func (r *RunRecorder) FinishStep(
 	}, "step-update")
 }
 
-func (r *RunRecorder) snapshotToolNames() map[string]string {
+func (r *runRecorder) snapshotToolNames() map[string]string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make(map[string]string, len(r.toolNameByCallID))
@@ -307,7 +320,7 @@ func (r *RunRecorder) snapshotToolNames() map[string]string {
 	return out
 }
 
-func (r *RunRecorder) withDB(
+func (r *runRecorder) withDB(
 	ctx context.Context,
 	mutate func(db *database) (changed bool),
 	notifyEvent string,
@@ -330,7 +343,7 @@ func (r *RunRecorder) withDB(
 	return nil
 }
 
-func (r *RunRecorder) readDBLocked() database {
+func (r *runRecorder) readDBLocked() database {
 	b, err := os.ReadFile(r.dbPath)
 	if err != nil {
 		return database{Runs: []Run{}, Steps: []Step{}}
@@ -348,7 +361,7 @@ func (r *RunRecorder) readDBLocked() database {
 	return db
 }
 
-func (r *RunRecorder) writeDBLocked(db database) error {
+func (r *runRecorder) writeDBLocked(db database) error {
 	if err := os.MkdirAll(r.dbDir, 0o755); err != nil {
 		return err
 	}
@@ -429,7 +442,7 @@ func findGitRoot(start string) string {
 	}
 }
 
-func (r *RunRecorder) notify(ctx context.Context, event string) {
+func (r *runRecorder) notify(ctx context.Context, event string) {
 	if r == nil || !r.enabled || r.http == nil {
 		return
 	}
@@ -777,18 +790,16 @@ func newUUID() string {
 
 type recorderKey struct{}
 
-// WithRecorder returns a child context carrying the given RunRecorder.
-// If rec is nil the original context is returned unchanged.
-func WithRecorder(ctx context.Context, rec *RunRecorder) context.Context {
-	if rec == nil {
-		return ctx
-	}
+// WithRecorder returns a child context carrying the given Recorder.
+func WithRecorder(ctx context.Context, rec Recorder) context.Context {
 	return context.WithValue(ctx, recorderKey{}, rec)
 }
 
-// RecorderFrom extracts the RunRecorder previously stored via WithRecorder.
-// Returns nil when no recorder is present.
-func RecorderFrom(ctx context.Context) *RunRecorder {
-	rec, _ := ctx.Value(recorderKey{}).(*RunRecorder)
-	return rec
+// RecorderFrom extracts the Recorder previously stored via WithRecorder.
+// Never returns nil — returns Noop() when no recorder is present.
+func RecorderFrom(ctx context.Context) Recorder {
+	if rec, ok := ctx.Value(recorderKey{}).(Recorder); ok && rec != nil {
+		return rec
+	}
+	return _noop
 }

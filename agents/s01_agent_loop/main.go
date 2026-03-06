@@ -32,7 +32,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
@@ -84,7 +83,7 @@ func main() {
 	system := fmt.Sprintf("You are a coding agent at %s. Use bash to solve tasks. Act, don't explain.", cwd)
 
 	// DevTools recorder: keep one run for the whole REPL session
-	rec := devtools.NewRunRecorderFromEnv()
+	rec := devtools.NewRecorderFromEnv()
 
 	// 持久化对话历史，跨轮次保留上下文
 	history := []openai.ChatCompletionMessageParamUnion{}
@@ -127,7 +126,7 @@ func agentLoop(
 	system string,
 	messages []openai.ChatCompletionMessageParamUnion,
 	workDir string,
-	rec *devtools.RunRecorder,
+	rec devtools.Recorder,
 ) []openai.ChatCompletionMessageParamUnion {
 	provider := inferProviderFromEnv()
 	modelID := ""
@@ -151,17 +150,12 @@ func agentLoop(
 			Tools:    []openai.ChatCompletionToolParam{bashToolDef()},
 		}
 
-		stepID, start := "", time.Time{}
-		if rec != nil {
-			stepID, start = rec.StartStep(context.Background(), "generate", modelID, provider, fullMessages, []openai.ChatCompletionToolParam{bashToolDef()}, map[string]any{
-				"baseURL": os.Getenv("DASHSCOPE_BASE_URL"),
-			}, params)
-		}
+		stepID, start := rec.StartStep(context.Background(), "generate", modelID, provider, fullMessages, []openai.ChatCompletionToolParam{bashToolDef()}, map[string]any{
+			"baseURL": os.Getenv("DASHSCOPE_BASE_URL"),
+		}, params)
 		resp, err := llm.Complete(context.Background(), params)
 		if err != nil {
-			if rec != nil {
-				rec.FinishStep(context.Background(), stepID, start, nil, nil, err, params, nil, nil)
-			}
+			rec.FinishStep(context.Background(), stepID, start, nil, nil, err, params, nil, nil)
 			fmt.Fprintln(os.Stderr, "API error:", err)
 			return messages
 		}
@@ -169,11 +163,9 @@ func agentLoop(
 		choice := resp.Choices[0]
 		messages = append(messages, choice.Message.ToParam())
 
-		if rec != nil {
-			output := buildViewerOutput(choice.FinishReason, choice.Message)
-			usage := buildViewerUsage(resp)
-			rec.FinishStep(context.Background(), stepID, start, output, usage, nil, params, resp, nil)
-		}
+		output := buildViewerOutput(choice.FinishReason, choice.Message)
+		usage := buildViewerUsage(resp)
+		rec.FinishStep(context.Background(), stepID, start, output, usage, nil, params, resp, nil)
 
 		// 没有工具调用时，模型返回最终文本，循环结束
 		if choice.FinishReason != "tool_calls" {
@@ -182,9 +174,7 @@ func agentLoop(
 
 		// 执行每个工具调用，收集结果
 		for _, tc := range choice.Message.ToolCalls {
-			if rec != nil {
-				rec.RegisterToolCall(tc.ID, tc.Function.Name)
-			}
+			rec.RegisterToolCall(tc.ID, tc.Function.Name)
 			var args map[string]any
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 				messages = append(messages, openai.ToolMessage(fmt.Sprintf("error: %s", err), tc.ID))

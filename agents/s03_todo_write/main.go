@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
+	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
 	"github.com/nickdu2009/learn-claude-code/pkg/loop"
 	"github.com/nickdu2009/learn-claude-code/pkg/tools"
 	"github.com/openai/openai-go"
@@ -55,6 +56,8 @@ func main() {
 	registry.Register(tools.EditFileToolDef(), tools.EditFileHandler)
 	registry.Register(tools.TodoToolDef(), todoManager.HandleTodo)
 
+	rec := devtools.NewRecorderFromEnv()
+
 	history := []openai.ChatCompletionMessageParamUnion{
 		openai.SystemMessage(system),
 	}
@@ -72,8 +75,9 @@ func main() {
 
 		history = append(history, openai.UserMessage(query))
 
+		ctx := devtools.WithRecorder(context.Background(), rec)
 		history, err = loop.RunWithTodoNag(
-			context.Background(),
+			ctx,
 			client,
 			model,
 			history,

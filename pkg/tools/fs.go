@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/openai/openai-go"
@@ -35,7 +36,12 @@ func ReadFileHandler(_ context.Context, args map[string]any) (string, error) {
 		return "", fmt.Errorf("missing or invalid 'path' argument")
 	}
 
-	content, err := os.ReadFile(path)
+	safe, err := safePath(path)
+	if err != nil {
+		return "", err
+	}
+
+	content, err := os.ReadFile(safe)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
@@ -72,11 +78,19 @@ func WriteFileHandler(_ context.Context, args map[string]any) (string, error) {
 		return "", fmt.Errorf("missing or invalid 'content' argument")
 	}
 
-	err := os.WriteFile(path, []byte(content), 0644)
+	safe, err := safePath(path)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(safe), 0755); err != nil {
+		return "", fmt.Errorf("failed to create parent directories: %w", err)
+	}
+
+	err = os.WriteFile(safe, []byte(content), 0644)
 	if err != nil {
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
-	return fmt.Sprintf("Successfully wrote to %s", path), nil
+	return fmt.Sprintf("Successfully wrote to %s", safe), nil
 }
 
 // ListDirToolDef returns the definition for the list_dir tool.
@@ -132,21 +146,26 @@ func EditFileHandler(_ context.Context, args map[string]any) (string, error) {
 		return "", fmt.Errorf("missing or invalid 'new_text' argument")
 	}
 
-	content, err := os.ReadFile(path)
+	safe, err := safePath(path)
+	if err != nil {
+		return "", err
+	}
+
+	content, err := os.ReadFile(safe)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
 
 	src := string(content)
 	if !strings.Contains(src, oldText) {
-		return "", fmt.Errorf("text not found in %s", path)
+		return "", fmt.Errorf("text not found in %s", safe)
 	}
 
 	updated := strings.Replace(src, oldText, newText, 1)
-	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
+	if err := os.WriteFile(safe, []byte(updated), 0644); err != nil {
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
-	return fmt.Sprintf("Edited %s", path), nil
+	return fmt.Sprintf("Edited %s", safe), nil
 }
 
 // ListDirHandler executes the list_dir tool.
@@ -156,7 +175,12 @@ func ListDirHandler(_ context.Context, args map[string]any) (string, error) {
 		return "", fmt.Errorf("missing or invalid 'path' argument")
 	}
 
-	entries, err := os.ReadDir(path)
+	safe, err := safePath(path)
+	if err != nil {
+		return "", err
+	}
+
+	entries, err := os.ReadDir(safe)
 	if err != nil {
 		return "", fmt.Errorf("failed to list directory: %w", err)
 	}
@@ -178,4 +202,52 @@ func ListDirHandler(_ context.Context, args map[string]any) (string, error) {
 		}
 	}
 	return result, nil
+}
+
+func safePath(path string) (string, error) {
+	workspace, err := workspaceRoot()
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve workspace: %w", err)
+	}
+
+	workspace = filepath.Clean(workspace)
+	resolved := path
+	if filepath.IsAbs(path) {
+		resolved = filepath.Clean(path)
+	} else {
+		resolved = filepath.Clean(filepath.Join(workspace, path))
+	}
+
+	rel, err := filepath.Rel(workspace, resolved)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve path %q: %w", path, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path escapes workspace: %s", path)
+	}
+
+	return resolved, nil
+}
+
+func workspaceRoot() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	dir := filepath.Clean(cwd)
+	for {
+		gitPath := filepath.Join(dir, ".git")
+		if info, statErr := os.Stat(gitPath); statErr == nil {
+			if info.IsDir() || info.Mode().IsRegular() {
+				return dir, nil
+			}
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return cwd, nil
+		}
+		dir = parent
+	}
 }

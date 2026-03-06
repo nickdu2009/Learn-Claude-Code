@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
 	"github.com/nickdu2009/learn-claude-code/pkg/tools"
@@ -20,11 +19,10 @@ import (
 // Run executes the agent loop until the model stops requesting tool calls.
 // messages is the conversation history (modified in place).
 //
-// The RunRecorder is obtained from ctx via devtools.RecorderFrom. If no recorder
-// is present, one is created automatically from environment variables. Callers who
-// need a specific recorder should inject it beforehand:
+// The Recorder is obtained from ctx via devtools.RecorderFrom (returns Noop when
+// absent). Callers must inject a recorder before calling Run:
 //
-//	ctx = devtools.WithRecorder(ctx, myRecorder)
+//	ctx = devtools.WithRecorder(ctx, devtools.NewRecorderFromEnv())
 //	loop.Run(ctx, client, model, messages, registry)
 //
 // When the environment variable AI_SDK_DEVTOOLS_STREAM=1 is set, each LLM call
@@ -36,7 +34,6 @@ func Run(
 	messages []openai.ChatCompletionMessageParamUnion,
 	registry *tools.Registry,
 ) ([]openai.ChatCompletionMessageParamUnion, error) {
-	ctx = ensureRecorder(ctx)
 	rec := devtools.RecorderFrom(ctx)
 	provider := inferProviderFromEnv()
 	useStream := isStreamingEnabled()
@@ -55,10 +52,7 @@ func Run(
 			stepType = "stream"
 		}
 
-		stepID, start := "", time.Time{}
-		if rec != nil {
-			stepID, start = rec.StartStep(ctx, stepType, model, provider, messages, registry.Definitions(), providerOpts, params)
-		}
+		stepID, start := rec.StartStep(ctx, stepType, model, provider, messages, registry.Definitions(), providerOpts, params)
 
 		var (
 			choice    openai.ChatCompletionChoice
@@ -77,19 +71,15 @@ func Run(
 		}
 
 		if callErr != nil {
-			if rec != nil {
-				rec.FinishStep(ctx, stepID, start, nil, nil, fmt.Errorf("API call failed: %w", callErr), params, nil, nil)
-			}
+			rec.FinishStep(ctx, stepID, start, nil, nil, fmt.Errorf("API call failed: %w", callErr), params, nil, nil)
 			return messages, fmt.Errorf("API call failed: %w", callErr)
 		}
 
 		messages = append(messages, choice.Message.ToParam())
 
-		if rec != nil {
-			output := buildViewerOutput(choice.FinishReason, choice.Message)
-			usage := buildViewerUsage(resp)
-			rec.FinishStep(ctx, stepID, start, output, usage, nil, params, resp, rawChunks)
-		}
+		output := buildViewerOutput(choice.FinishReason, choice.Message)
+		usage := buildViewerUsage(resp)
+		rec.FinishStep(ctx, stepID, start, output, usage, nil, params, resp, rawChunks)
 
 		// 没有工具调用时，模型返回最终文本，循环结束
 		if choice.FinishReason != "tool_calls" {
@@ -98,9 +88,7 @@ func Run(
 
 		// 执行所有工具调用，收集结果
 		for _, tc := range choice.Message.ToolCalls {
-			if rec != nil {
-				rec.RegisterToolCall(tc.ID, tc.Function.Name)
-			}
+			rec.RegisterToolCall(tc.ID, tc.Function.Name)
 			var args map[string]any
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 				return messages, fmt.Errorf("failed to parse tool args for %s: %w", tc.Function.Name, err)
@@ -114,15 +102,6 @@ func Run(
 			messages = append(messages, openai.ToolMessage(output, tc.ID))
 		}
 	}
-}
-
-// ensureRecorder checks whether ctx already carries a RunRecorder. If not, it
-// creates one from environment variables and returns a derived context.
-func ensureRecorder(ctx context.Context) context.Context {
-	if devtools.RecorderFrom(ctx) != nil {
-		return ctx
-	}
-	return devtools.WithRecorder(ctx, devtools.NewRunRecorderFromEnv())
 }
 
 // isStreamingEnabled returns true when AI_SDK_DEVTOOLS_STREAM env var is truthy.

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
 	"github.com/nickdu2009/learn-claude-code/pkg/tools"
@@ -21,7 +20,7 @@ const (
 // RunWithTodoNag executes an agent loop like Run, but injects a nag reminder
 // when the model goes N rounds without calling the todo tool.
 //
-// The RunRecorder is obtained from ctx via devtools.RecorderFrom (see Run).
+// The Recorder is obtained from ctx via devtools.RecorderFrom (see Run).
 func RunWithTodoNag(
 	ctx context.Context,
 	client *openai.Client,
@@ -29,7 +28,6 @@ func RunWithTodoNag(
 	messages []openai.ChatCompletionMessageParamUnion,
 	registry *tools.Registry,
 ) ([]openai.ChatCompletionMessageParamUnion, error) {
-	ctx = ensureRecorder(ctx)
 	rec := devtools.RecorderFrom(ctx)
 	provider := inferProviderFromEnv()
 	useStream := isStreamingEnabled()
@@ -55,10 +53,7 @@ func RunWithTodoNag(
 			stepType = "stream"
 		}
 
-		stepID, start := "", time.Time{}
-		if rec != nil {
-			stepID, start = rec.StartStep(ctx, stepType, model, provider, messages, registry.Definitions(), providerOpts, params)
-		}
+		stepID, start := rec.StartStep(ctx, stepType, model, provider, messages, registry.Definitions(), providerOpts, params)
 
 		var (
 			choice    openai.ChatCompletionChoice
@@ -77,19 +72,15 @@ func RunWithTodoNag(
 		}
 
 		if callErr != nil {
-			if rec != nil {
-				rec.FinishStep(ctx, stepID, start, nil, nil, fmt.Errorf("API call failed: %w", callErr), params, nil, nil)
-			}
+			rec.FinishStep(ctx, stepID, start, nil, nil, fmt.Errorf("API call failed: %w", callErr), params, nil, nil)
 			return messages, fmt.Errorf("API call failed: %w", callErr)
 		}
 
 		messages = append(messages, choice.Message.ToParam())
 
-		if rec != nil {
-			output := buildViewerOutput(choice.FinishReason, choice.Message)
-			usage := buildViewerUsage(resp)
-			rec.FinishStep(ctx, stepID, start, output, usage, nil, params, resp, rawChunks)
-		}
+		output := buildViewerOutput(choice.FinishReason, choice.Message)
+		usage := buildViewerUsage(resp)
+		rec.FinishStep(ctx, stepID, start, output, usage, nil, params, resp, rawChunks)
 
 		// No tool calls → final text, loop ends.
 		if choice.FinishReason != "tool_calls" {
@@ -100,9 +91,7 @@ func RunWithTodoNag(
 
 		// Execute all tool calls and append tool results.
 		for _, tc := range choice.Message.ToolCalls {
-			if rec != nil {
-				rec.RegisterToolCall(tc.ID, tc.Function.Name)
-			}
+			rec.RegisterToolCall(tc.ID, tc.Function.Name)
 
 			if tc.Function.Name == "todo" {
 				usedTodoThisRound = true

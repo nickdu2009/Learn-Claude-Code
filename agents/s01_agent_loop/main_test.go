@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
 	"github.com/openai/openai-go"
 )
 
@@ -125,7 +126,7 @@ func TestAgentLoop_Stop(t *testing.T) {
 	initial := []openai.ChatCompletionMessageParamUnion{
 		openai.UserMessage("hi"),
 	}
-	result := agentLoop(mock, "system", initial, "", nil)
+	result := agentLoop(mock, "system", initial, "", devtools.Noop())
 
 	// 初始 1 条 + Assistant 回复 1 条 = 2 条
 	if len(result) != 2 {
@@ -156,7 +157,7 @@ func TestAgentLoop_ToolCall(t *testing.T) {
 	initial := []openai.ChatCompletionMessageParamUnion{
 		openai.UserMessage("run echo"),
 	}
-	result := agentLoop(mock, "system", initial, "", nil)
+	result := agentLoop(mock, "system", initial, "", devtools.Noop())
 
 	// 初始 1 + assistant(tool_calls) 1 + tool_result 1 + assistant(stop) 1 = 4
 	if len(result) != 4 {
@@ -190,7 +191,7 @@ func TestAgentLoop_InvalidJSON(t *testing.T) {
 	initial := []openai.ChatCompletionMessageParamUnion{
 		openai.UserMessage("do something"),
 	}
-	result := agentLoop(mock, "system", initial, "", nil)
+	result := agentLoop(mock, "system", initial, "", devtools.Noop())
 
 	// 初始 1 + assistant(tool_calls) 1 + tool_result(error) 1 + assistant(stop) 1 = 4
 	if len(result) != 4 {
@@ -217,7 +218,7 @@ func TestAgentLoop_APIError(t *testing.T) {
 	initial := []openai.ChatCompletionMessageParamUnion{
 		openai.UserMessage("hello"),
 	}
-	result := agentLoop(mock, "system", initial, "", nil)
+	result := agentLoop(mock, "system", initial, "", devtools.Noop())
 
 	// API 出错时应立即返回原始消息，不追加任何内容
 	if len(result) != len(initial) {
