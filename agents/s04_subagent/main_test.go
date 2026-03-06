@@ -66,8 +66,10 @@ func TestE2E_TaskDelegationWriteAndVerify(t *testing.T) {
 
 	dir := e2eSandboxDir(t)
 	t.Logf("sandbox dir: %s", dir)
+	targetFile := filepath.Join(dir, "delegated.txt")
 
 	prompt := strings.ReplaceAll(fixtureDelegateWriteAndVerify, "{{WORK_DIR}}", dir)
+	prompt = strings.ReplaceAll(prompt, "{{TARGET_FILE}}", targetFile)
 
 	client, err := newClient()
 	if err != nil {
@@ -115,10 +117,9 @@ func TestE2E_TaskDelegationWriteAndVerify(t *testing.T) {
 		t.Fatal("expected parent model to verify with read_file, but it did not")
 	}
 
-	delegatedFile := filepath.Join(dir, "delegated.txt")
-	data, err := os.ReadFile(delegatedFile)
+	data, err := os.ReadFile(targetFile)
 	if err != nil {
-		t.Fatalf("delegated.txt should have been created at %s: %v", delegatedFile, err)
+		t.Fatalf("delegated.txt should have been created at %s: %v", targetFile, err)
 	}
 	if strings.TrimSpace(string(data)) != "subagent-success" {
 		t.Fatalf("delegated.txt content should be 'subagent-success', got %q", string(data))
@@ -126,11 +127,12 @@ func TestE2E_TaskDelegationWriteAndVerify(t *testing.T) {
 
 	finalReply := extractFinalReply(result)
 	t.Logf("final reply: %s", finalReply)
-	if !strings.Contains(strings.ToLower(finalReply), "task") {
-		t.Errorf("final reply should mention task delegation, got %q", finalReply)
-	}
 	if !strings.Contains(finalReply, "subagent-success") {
 		t.Errorf("final reply should mention exact file content, got %q", finalReply)
+	}
+	if !strings.Contains(strings.ToLower(finalReply), "verification succeeded") &&
+		!strings.Contains(strings.ToLower(finalReply), "verified") {
+		t.Errorf("final reply should mention successful verification, got %q", finalReply)
 	}
 }
 

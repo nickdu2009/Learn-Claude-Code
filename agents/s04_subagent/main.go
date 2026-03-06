@@ -1,3 +1,6 @@
+// s04 follows the original tutorial strictly:
+// parent agent = base tools + task, child agent = base tools only.
+// The todo tool is intentionally not registered in this session.
 package main
 
 import (
