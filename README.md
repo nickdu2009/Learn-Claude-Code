@@ -95,7 +95,7 @@ flowchart TD
 | s03 | TodoWrite | *An agent without a plan drifts* | 结构体序列化为 JSON，文件原子写入 |
 | s04 | Subagents | *Break big tasks down; each subtask gets a clean context* | 父 Agent = base tools + `task`，子 Agent = base tools only（不带 `todo`） |
 | s05 | Skills | *Load knowledge when you need it, not upfront* | `os.ReadFile` 按需读取 SKILL.md，注入 `tool_result` |
-| s06 | Context Compact | *Context will fill up; you need a way to make room* | 三层压缩：截断 → 摘要 → 滚动窗口 |
+| s06 | Context Compact | *Context will fill up; you need a way to make room* | 三层压缩：截断 → 摘要 → 滚动窗口，阈值使用近似 token 估算 |
 | s07 | Tasks | *Break big goals into small tasks, order them, persist to disk* | JSON 文件 CRUD + 拓扑排序依赖图 |
 | s08 | Background Tasks | *Run slow operations in the background; the agent keeps thinking* | `goroutine` 后台运行，`channel` 注入完成通知 |
 | s09 | Agent Teams | *When the task is too big for one, delegate to teammates* | 多 goroutine 队友 + JSONL 文件邮箱 |
