@@ -2,6 +2,7 @@
 .devtools/
 .transcripts/
 .local/
+.tasks/
 .cursor/
 openspec/
 node_modules/
