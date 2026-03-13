@@ -103,6 +103,38 @@ flowchart TD
 | s11 | Autonomous Agents | *Teammates scan the board and claim tasks themselves* | 空闲轮询 ticker + 原子 CAS 认领任务 |
 | s12 | Worktree Isolation | *Each works in its own directory, no interference* | `git worktree` + 任务 ID 绑定独立工作目录 |
 
+### s08 Showcase：Release Bundle Validation
+
+除了最小的 `background_task_flow.md` 示例，`s08` 还提供了一个更贴近真实工程流程的 showcase：`release_bundle_validation.md`。它刻意把“后台慢任务”和“前台持续推进”组合在一起，用来验证 Agent 是否真的学会了异步协作，而不是仅仅会启动一个后台命令。
+
+```mermaid
+flowchart TD
+    userRequest[用户请求准备发布包] --> startBg[background_run启动校验脚本]
+    startBg --> fgWork[Agent继续前台写文件]
+    fgWork --> writeEnv[写release.env]
+    fgWork --> writeFlags[写feature_flags.json]
+    fgWork --> writeDoc[写DEPLOY.md]
+    startBg --> bgValidate[后台等待文件齐备并执行校验]
+    bgValidate --> bgNotify[注入background-results通知]
+    bgNotify --> inspectBg[check_background读取完整结果]
+    inspectBg --> finalReply[总结产物状态与校验token]
+```
+
+这个用例重点展示 4 件事：
+
+- Agent 先用 `background_run` 启动发布前校验，而不是同步等待。
+- 后台校验运行期间，Agent 继续用 `write_file` 产出多个交付文件。
+- 校验完成后，通过 `background-results` 通知驱动下一轮推理。
+- Agent 再调用 `check_background` 获取完整输出，并在最终回复中总结固定 `KEY=VALUE` 结果。
+
+对应测试位于：
+
+- `agents/s08_background_tasks/testdata/release_bundle_validation.md`
+- `agents/s08_background_tasks/integration_test.go`
+- `agents/s08_background_tasks/integration_real_test.go`
+
+相较于单纯的 `sleep + echo` 教学例子，这个 showcase 更接近真实发布流水线，也更能体现 `s08` 的核心思想：慢操作在后台继续跑，Agent 前台不能停下来。
+
 ---
 
 ## 目录结构
