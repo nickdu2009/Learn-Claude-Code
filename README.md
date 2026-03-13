@@ -137,6 +137,63 @@ flowchart TD
 
 ---
 
+### s09 Showcase：Team Handoff Release Note
+
+除了最小的 `team_mailbox_flow.md` 示例，`s09` 还提供了一个更能体现“持久化队友 + 邮箱协作”价值的 showcase：`team_handoff_release_note.md`。它刻意把单次委派升级成 writer/reviewer 的多轮 handoff，用来验证 Agent 是否真的学会了把工作分配给多个有身份的 teammate，并通过 inbox 驱动后续协作。
+
+```mermaid
+flowchart TD
+    userRequest[用户请求准备发布说明] --> leadSpawn[Lead生成alice和bob]
+    leadSpawn --> aliceDraft[Alice写release_notes初稿]
+    aliceDraft --> aliceReady[Alice发draft-ready给Lead]
+    aliceReady --> leadReview[Lead请求Bob审稿]
+    leadReview --> bobFeedback[Bob读取文件并发review-feedback]
+    bobFeedback --> leadForward[Lead转发反馈给Alice]
+    leadForward --> aliceRevise[Alice二次唤醒并修订文件]
+    aliceRevise --> aliceUpdated[Alice发draft-updated给Lead]
+    aliceUpdated --> leadReReview[Lead再次请求Bob复审]
+    leadReReview --> bobApprove[Bob写review_result并发review-ok]
+    bobApprove --> finalReply[Lead总结handoff链路与最终产物]
+```
+
+这个用例重点展示 5 件事：
+
+- Lead 使用 `spawn_teammate` 创建多个持久 teammate，而不是把所有工作都留在自己手里。
+- `alice` 与 `bob` 拥有独立身份、独立 inbox 和独立 loop，不共享一份混乱上下文。
+- Lead 通过 `send_message` 驱动 reviewer handoff，teammate 完成一轮工作后回到 `idle`，还能被再次唤醒继续协作。
+- 整个流程依赖 inbox 通知推进，而不是同步阻塞等待某个子任务结束。
+- 最终通过 `release_notes.md` 与 `review_result.txt` 两个文件，验证多轮 writer/reviewer 协作确实发生。
+
+在 DevTools trace 中，这个 showcase 还有一个额外的观测价值：Lead 的 `spawn_teammate` 所在 step 会挂出 `linked_child_run_ids`，而 `alice` / `bob` 会各自以独立 child run 的形式出现。也就是说，你不只能看到“调用了 `spawn_teammate`”，还能看到：
+
+- 哪个 Lead step 派生了 teammate
+- 每个 teammate 自己的 run 标题、steps 与完成状态
+- child run 通过 `parent_run_id` / `parent_step_id` 回指到对应的 Lead 调度点
+
+```mermaid
+flowchart TD
+    leadRun[LeadRun] --> leadStep[LeadStep: spawn_teammate]
+    leadStep --> linkedChildren[linked_child_run_ids]
+    linkedChildren --> aliceRun[ChildRun: teammate alice]
+    linkedChildren --> bobRun[ChildRun: teammate bob]
+    aliceRun --> aliceSteps[alice own steps]
+    bobRun --> bobSteps[bob own steps]
+    aliceRun --> aliceParent[parent_step_id -> LeadStep]
+    bobRun --> bobParent[parent_step_id -> LeadStep]
+```
+
+这能把 `s09` 和普通的后台命令或一次性 subagent 明确区分开来：这里记录的是一个真正的 team topology，而不是只有一串工具调用日志。
+
+对应测试位于：
+
+- `agents/s09_agent_teams/testdata/team_handoff_release_note.md`
+- `agents/s09_agent_teams/integration_test.go`
+- `agents/s09_agent_teams/integration_real_test.go`
+
+相较于只让一个 teammate 写 `hello.txt` 的最小例子，这个 showcase 更接近真实工程中的“起草 -> 审阅 -> 修订 -> 复审”链路，也更能体现 `s09` 的核心思想：队友不仅要存在，还要能持续协作、持续收发消息、持续被再次唤醒。
+
+---
+
 ## 目录结构
 
 ```
