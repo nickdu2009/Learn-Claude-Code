@@ -45,9 +45,8 @@ export function JsonBlock({
         )}
       </button>
       <pre
-        className={`rounded-md border border-border bg-background p-3 text-xs text-muted-foreground whitespace-pre-wrap ${
-          compact ? 'max-h-72 overflow-auto' : ''
-        }`}
+        className={`rounded-md border border-border bg-background p-3 text-xs text-muted-foreground whitespace-pre-wrap ${compact ? 'max-h-72 overflow-auto' : ''
+          }`}
       >
         {jsonString}
       </pre>
@@ -110,9 +109,8 @@ export function ReasoningBlock({ content }: { content: string }) {
         onClick={() => setExpanded(previous => !previous)}
       >
         <ChevronRight
-          className={`size-3 shrink-0 text-amber-500 transition-transform ${
-            expanded ? 'rotate-90' : ''
-          }`}
+          className={`size-3 shrink-0 text-amber-500 transition-transform ${expanded ? 'rotate-90' : ''
+            }`}
         />
         <Brain className="size-3 shrink-0 text-amber-500" />
         <span className="text-xs font-medium text-amber-500">Thinking</span>
@@ -158,11 +156,10 @@ export function TextBlock({
   return (
     <div className={`overflow-hidden rounded-md border ${isSystem ? 'border-blue-500/30' : 'border-border'}`}>
       <button
-        className={`flex w-full items-center gap-2 px-3 py-2 transition-colors ${
-          isSystem
+        className={`flex w-full items-center gap-2 px-3 py-2 transition-colors ${isSystem
             ? 'bg-blue-500/10 hover:bg-blue-500/20'
             : 'bg-muted/30 hover:bg-muted/50'
-        }`}
+          }`}
         onClick={toggleExpanded}
         onKeyDown={event => {
           if (event.key === 'Enter' || event.key === ' ') {
@@ -172,27 +169,23 @@ export function TextBlock({
         }}
       >
         <ChevronRight
-          className={`size-3 shrink-0 transition-transform ${
-            isSystem ? 'text-blue-400' : 'text-muted-foreground'
-          } ${expanded ? 'rotate-90' : ''}`}
+          className={`size-3 shrink-0 transition-transform ${isSystem ? 'text-blue-400' : 'text-muted-foreground'
+            } ${expanded ? 'rotate-90' : ''}`}
         />
         <MessageSquare
-          className={`size-3 shrink-0 ${
-            isSystem ? 'text-blue-400' : 'text-muted-foreground'
-          }`}
+          className={`size-3 shrink-0 ${isSystem ? 'text-blue-400' : 'text-muted-foreground'
+            }`}
         />
         <span
-          className={`text-xs font-medium ${
-            isSystem ? 'text-blue-400' : 'text-foreground'
-          }`}
+          className={`text-xs font-medium ${isSystem ? 'text-blue-400' : 'text-foreground'
+            }`}
         >
           Text
         </span>
         {!expanded && (
           <span
-            className={`ml-1 truncate text-[11px] ${
-              isSystem ? 'text-blue-400/70' : 'text-muted-foreground'
-            }`}
+            className={`ml-1 truncate text-[11px] ${isSystem ? 'text-blue-400/70' : 'text-muted-foreground'
+              }`}
           >
             {preview}
           </span>
@@ -269,9 +262,8 @@ export function UsageSummary({
 export function ExpandChevron({ expanded }: { expanded: boolean }) {
   return (
     <ChevronRight
-      className={`size-4 text-muted-foreground transition-transform ${
-        expanded ? 'rotate-90' : ''
-      }`}
+      className={`size-4 text-muted-foreground transition-transform ${expanded ? 'rotate-90' : ''
+        }`}
     />
   );
 }

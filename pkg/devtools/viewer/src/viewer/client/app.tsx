@@ -1,5 +1,14 @@
-import React, { useEffect, useState } from 'react';
-import { AlertCircle, ChevronDown, ExternalLink, RefreshCw, Trash2 } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  GripVertical,
+  RefreshCw,
+  Trash2,
+} from 'lucide-react';
 
 import { AISDKLogo } from '@/components/icons';
 import { Button } from '@/components/ui/button';
@@ -42,14 +51,27 @@ import type {
   UnsupportedState,
 } from '@/lib/viewer-types';
 
+const SIDEBAR_DEFAULT_WIDTH = 340;
+const SIDEBAR_MIN_WIDTH = 260;
+const SIDEBAR_MAX_WIDTH = 520;
+const SIDEBAR_COLLAPSED_WIDTH = 56;
+
 function App() {
   const [meta, setMeta] = useState<TraceMeta | null>(null);
   const [runs, setRuns] = useState<RunNode[]>([]);
   const [selectedRun, setSelectedRun] = useState<ParsedRunDetail | null>(null);
   const [selectedRunID, setSelectedRunID] = useState<string | null>(null);
+  const [collapsedRunIDs, setCollapsedRunIDs] = useState<Set<string>>(new Set());
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isSidebarResizing, setIsSidebarResizing] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [unsupported, setUnsupported] = useState<UnsupportedState | null>(null);
+  const sidebarRef = useRef<HTMLElement | null>(null);
+  const resizeStartRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const liveSidebarWidthRef = useRef(SIDEBAR_DEFAULT_WIDTH);
+  const resizeFrameRef = useRef<number | null>(null);
 
   const setViewerError = (error: unknown) => {
     setUnsupported({
@@ -155,7 +177,7 @@ function App() {
     source.addEventListener('trace', () => {
       loadRuns().catch(console.error);
     });
-    source.addEventListener('ready', () => {});
+    source.addEventListener('ready', () => { });
     source.onerror = () => {
       source.close();
       setTimeout(() => {
@@ -168,6 +190,92 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRunID]);
 
+  useEffect(() => {
+    if (!selectedRunID) {
+      return;
+    }
+
+    const ancestorRunIDs = findAncestorRunIDs(runs, selectedRunID);
+    if (!ancestorRunIDs || ancestorRunIDs.length === 0) {
+      return;
+    }
+
+    setCollapsedRunIDs(previous => {
+      let changed = false;
+      const next = new Set(previous);
+      for (const ancestorID of ancestorRunIDs) {
+        if (next.delete(ancestorID)) {
+          changed = true;
+        }
+      }
+      return changed ? next : previous;
+    });
+  }, [runs, selectedRunID]);
+
+  useEffect(() => {
+    if (!isSidebarResizing) {
+      return;
+    }
+
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!resizeStartRef.current) {
+        return;
+      }
+
+      const nextWidth = clampSidebarWidth(
+        resizeStartRef.current.startWidth + (event.clientX - resizeStartRef.current.startX),
+      );
+      liveSidebarWidthRef.current = nextWidth;
+
+      if (resizeFrameRef.current !== null) {
+        return;
+      }
+
+      resizeFrameRef.current = window.requestAnimationFrame(() => {
+        if (sidebarRef.current && !isSidebarCollapsed) {
+          sidebarRef.current.style.width = `${liveSidebarWidthRef.current}px`;
+        }
+        resizeFrameRef.current = null;
+      });
+    };
+
+    const handleMouseUp = () => {
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+      setSidebarWidth(liveSidebarWidthRef.current);
+      setIsSidebarResizing(false);
+      resizeStartRef.current = null;
+    };
+
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isSidebarCollapsed, isSidebarResizing]);
+
+  useEffect(() => {
+    liveSidebarWidthRef.current = sidebarWidth;
+    if (sidebarRef.current) {
+      sidebarRef.current.style.width = `${isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebarWidth}px`;
+    }
+  }, [isSidebarCollapsed, sidebarWidth]);
+
   const toggleStep = (stepID: string) => {
     setExpandedSteps(previous => {
       const next = new Set(previous);
@@ -178,6 +286,31 @@ function App() {
       }
       return next;
     });
+  };
+
+  const toggleRunCollapse = (runID: string) => {
+    setCollapsedRunIDs(previous => {
+      const next = new Set(previous);
+      if (next.has(runID)) {
+        next.delete(runID);
+      } else {
+        next.add(runID);
+      }
+      return next;
+    });
+  };
+
+  const visibleRunCount = flattenRunIDs(runs).size;
+  const sidebarPanelWidth = isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebarWidth;
+
+  const handleSidebarResizeStart = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    if (isSidebarCollapsed) {
+      return;
+    }
+
+    resizeStartRef.current = { startX: event.clientX, startWidth: sidebarWidth };
+    setIsSidebarResizing(true);
   };
 
   if (unsupported) {
@@ -241,36 +374,101 @@ function App() {
       </header>
 
       <div className="flex min-w-0 flex-1 overflow-hidden">
-        <aside className="flex w-[300px] shrink-0 flex-col border-r border-border bg-sidebar">
-          <div className="border-b border-border px-4 py-3">
-            <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              Runs
-            </span>
-          </div>
-          <ScrollArea className="flex-1 overflow-hidden">
-            {loading ? (
-              <p className="p-4 text-sm text-muted-foreground">Loading...</p>
-            ) : runs.length === 0 ? (
-              <p className="p-4 text-sm text-muted-foreground">No runs yet</p>
+        <aside
+          ref={sidebarRef}
+          className={`flex min-h-0 shrink-0 flex-col border-r border-border bg-sidebar ${
+            isSidebarResizing ? '' : 'transition-[width] duration-200 ease-out'
+          }`}
+          style={{ width: `${sidebarPanelWidth}px` }}
+        >
+          <div className={`border-b border-border bg-sidebar ${isSidebarCollapsed ? 'px-2 py-3' : 'px-3 py-3'}`}>
+            {isSidebarCollapsed ? (
+              <div className="flex justify-center">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label="Expand runs sidebar"
+                  onClick={() => setIsSidebarCollapsed(false)}
+                  className="size-8 p-0 text-muted-foreground hover:text-foreground"
+                >
+                  <ChevronRight className="size-4" />
+                </Button>
+              </div>
             ) : (
-              <div>
-                {runs.map(node => (
-                  <RunTreeItem
-                    key={node.id}
-                    node={node}
-                    depth={0}
-                    selectedRunID={selectedRunID}
-                    onSelect={runID => {
-                      selectRun(runID).catch(setViewerError);
-                    }}
-                  />
-                ))}
+              <div className="rounded-xl border border-border/80 bg-background/20 px-4 py-3 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                      Runs
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                      <div className="min-w-0 text-[15px] font-semibold text-foreground">
+                        Execution tree
+                      </div>
+                      <span className="inline-flex min-w-9 items-center justify-center rounded-full border border-sidebar-primary/30 bg-sidebar-primary/10 px-2 py-0.5 font-mono text-[11px] text-sidebar-primary">
+                        {visibleRunCount}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                      Pinned navigation for runs, subagents, and handoffs.
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label="Collapse runs sidebar"
+                    onClick={() => setIsSidebarCollapsed(true)}
+                    className="mt-0.5 size-8 shrink-0 p-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <ChevronLeft className="size-4" />
+                  </Button>
+                </div>
               </div>
             )}
-          </ScrollArea>
+          </div>
+          {!isSidebarCollapsed && (
+            <ScrollArea className="min-h-0 flex-1 overflow-hidden">
+              {loading ? (
+                <p className="p-4 text-sm text-muted-foreground">Loading...</p>
+              ) : runs.length === 0 ? (
+                <p className="p-4 text-sm text-muted-foreground">No runs yet</p>
+              ) : (
+                <div className="space-y-2 px-3 py-2">
+                  {runs.map(node => (
+                    <RunTreeItem
+                      key={node.id}
+                      node={node}
+                      depth={0}
+                      selectedRunID={selectedRunID}
+                      collapsedRunIDs={collapsedRunIDs}
+                      onSelect={runID => {
+                        selectRun(runID).catch(setViewerError);
+                      }}
+                      onToggleCollapse={toggleRunCollapse}
+                    />
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+          )}
         </aside>
 
-        <main className="min-w-0 flex-1 overflow-hidden">
+        {!isSidebarCollapsed && (
+          <div className="relative shrink-0 border-r border-border/60 bg-background/20">
+            <button
+              type="button"
+              aria-label="Resize runs sidebar"
+              className={`flex h-full w-3 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground ${isSidebarResizing ? 'bg-accent/50 text-foreground' : ''
+                }`}
+              onMouseDown={handleSidebarResizeStart}
+              onDoubleClick={() => setSidebarWidth(SIDEBAR_DEFAULT_WIDTH)}
+            >
+              <GripVertical className="size-3.5" />
+            </button>
+          </div>
+        )}
+
+        <main className="min-h-0 min-w-0 flex-1 overflow-hidden">
           <ScrollArea className="h-full">
             {!selectedRun ? (
               <div className="flex min-h-[calc(100vh-57px)] items-center justify-center text-muted-foreground">
@@ -312,9 +510,8 @@ function App() {
                         onOpenChange={() => toggleStep(step.id)}
                       >
                         <Card
-                          className={`overflow-hidden py-0 ${
-                            isActiveStep ? 'ring-1 ring-blue-500/50' : ''
-                          }`}
+                          className={`overflow-hidden py-0 ${isActiveStep ? 'ring-1 ring-blue-500/50' : ''
+                            }`}
                         >
                           <CollapsibleTrigger asChild>
                             <button className="flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-accent/50">
@@ -342,17 +539,17 @@ function App() {
                                       <TokenBreakdownTooltip
                                         input={getInputTokenBreakdown(
                                           step.parsedUsage.inputTokens as
-                                            | number
-                                            | InputTokenBreakdown
-                                            | null
-                                            | undefined,
+                                          | number
+                                          | InputTokenBreakdown
+                                          | null
+                                          | undefined,
                                         )}
                                         output={getOutputTokenBreakdown(
                                           step.parsedUsage.outputTokens as
-                                            | number
-                                            | OutputTokenBreakdown
-                                            | null
-                                            | undefined,
+                                          | number
+                                          | OutputTokenBreakdown
+                                          | null
+                                          | undefined,
                                         )}
                                         raw={step.parsedUsage.raw}
                                       />
@@ -363,9 +560,8 @@ function App() {
                                   {formatDuration(step.duration_ms)}
                                 </span>
                                 <ChevronDown
-                                  className={`size-4 text-muted-foreground transition-transform ${
-                                    isExpanded ? 'rotate-180' : ''
-                                  }`}
+                                  className={`size-4 text-muted-foreground transition-transform ${isExpanded ? 'rotate-180' : ''
+                                    }`}
                                 />
                               </div>
                             </button>
@@ -477,6 +673,32 @@ function formatInputTokenSummary(usage: Record<string, unknown>) {
       ? `${output.total} (${output.reasoning} reasoning)`
       : String(output.total);
   return `${inputLabel} → ${outputLabel}`;
+}
+
+function clampSidebarWidth(width: number) {
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width));
+}
+
+function findAncestorRunIDs(
+  nodes: RunNode[],
+  targetRunID: string,
+  ancestors: string[] = [],
+): string[] | null {
+  for (const node of nodes) {
+    if (node.id === targetRunID) {
+      return ancestors;
+    }
+
+    const nextAncestors = findAncestorRunIDs(node.children, targetRunID, [
+      ...ancestors,
+      node.id,
+    ]);
+    if (nextAncestors) {
+      return nextAncestors;
+    }
+  }
+
+  return null;
 }
 
 export default App;

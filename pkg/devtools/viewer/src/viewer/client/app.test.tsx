@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -64,6 +64,7 @@ describe('viewer App interactions', () => {
         }),
     });
 
+    const user = userEvent.setup();
     render(<App />);
 
     expect(await screen.findByText('Unsupported Trace')).toBeInTheDocument();
@@ -252,13 +253,31 @@ describe('viewer App interactions', () => {
     expect(await screen.findByRole('heading', { name: 'Root' })).toBeInTheDocument();
 
     const runTreePane = screen.getByText('Runs').closest('aside');
-    expect(runTreePane).toHaveClass('w-[300px]', 'shrink-0');
+    expect(runTreePane).toHaveClass('min-h-0', 'shrink-0');
+    expect(runTreePane).toHaveStyle({ width: '340px' });
+    expect(screen.getByText('Execution tree')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /collapse runs sidebar/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /resize runs sidebar/i })).toBeInTheDocument();
 
     const detailPane = document.querySelector('main');
-    expect(detailPane).toHaveClass('min-w-0', 'flex-1');
+    expect(detailPane).toHaveClass('min-h-0', 'min-w-0', 'flex-1');
+
+    const runTreeScrollArea = runTreePane?.querySelector('[data-slot="scroll-area"]');
+    expect(runTreeScrollArea).toHaveClass('min-h-0', 'flex-1', 'overflow-hidden');
 
     const splitPane = runTreePane?.parentElement;
     expect(splitPane).toHaveClass('min-w-0', 'flex', 'overflow-hidden');
+
+    const resizeHandle = screen.getByRole('button', { name: /resize runs sidebar/i });
+    fireEvent.mouseDown(resizeHandle, { clientX: 340 });
+    fireEvent.mouseMove(window, { clientX: 400 });
+    fireEvent.mouseUp(window);
+    expect(runTreePane).toHaveStyle({ width: '400px' });
+
+    await user.click(screen.getByRole('button', { name: /collapse runs sidebar/i }));
+    expect(runTreePane).toHaveStyle({ width: '56px' });
+    expect(screen.queryByText('Execution tree')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /expand runs sidebar/i })).toBeInTheDocument();
   });
 
   it('renders hybrid step inspector, linked child runs, and clear flow', async () => {
@@ -452,6 +471,13 @@ describe('viewer App interactions', () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: 'Root' })).toBeInTheDocument();
+    expect(screen.getByText('Child A')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /collapse child runs for root/i }));
+    expect(screen.queryByText('Child A')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /expand child runs for root/i }));
+    expect(screen.getByText('Child A')).toBeInTheDocument();
 
     await user.click(screen.getAllByRole('button', { name: /write_file/i })[0]!);
 
@@ -584,7 +610,7 @@ describe('viewer App interactions', () => {
     expect(screen.getByText(/\(4\/4 completed\)/)).toBeInTheDocument();
   });
 
-  it('truncates long run tree content inside the left pane', () => {
+  it('wraps long run titles and expands summary on hover', () => {
     render(
       <RunTreeItem
         node={{
@@ -604,22 +630,36 @@ describe('viewer App interactions', () => {
         }}
         depth={0}
         selectedRunID={null}
-        onSelect={() => {}}
+        collapsedRunIDs={new Set()}
+        onSelect={() => { }}
+        onToggleCollapse={() => { }}
       />,
     );
 
     const treeButton = screen.getByRole('button');
-    expect(treeButton).toHaveClass('overflow-hidden');
+    expect(treeButton).not.toHaveClass('overflow-hidden');
 
     const title = screen.getByText(
       /This is an extremely long run title intended to verify that the tree item truncates/i,
     );
-    expect(title).toHaveClass('truncate');
+    expect(title).toHaveClass('whitespace-normal', 'break-all');
 
     const preview = screen.getByText(
       /This is an equally long summary preview that should remain clipped/i,
     );
-    expect(preview).toHaveClass('truncate');
+    expect(preview).toHaveClass('whitespace-normal', 'break-all');
+    expect(preview).toHaveStyle({
+      display: '-webkit-box',
+      WebkitBoxOrient: 'vertical',
+      WebkitLineClamp: '2',
+      overflow: 'hidden',
+    });
+
+    fireEvent.mouseEnter(treeButton);
+    expect(preview).not.toHaveStyle({ WebkitLineClamp: '2' });
+
+    fireEvent.mouseLeave(treeButton);
+    expect(preview).toHaveStyle({ WebkitLineClamp: '2' });
   });
 });
 
