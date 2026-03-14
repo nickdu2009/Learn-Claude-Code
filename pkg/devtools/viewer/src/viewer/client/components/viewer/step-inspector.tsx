@@ -13,6 +13,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   formatResultPreview,
   formatRole,
+  stripMarkdownForPreview,
   formatToolParams,
   formatToolParamsInline,
   getInputTokenBreakdown,
@@ -37,6 +38,7 @@ import type {
 } from '@/lib/viewer-types';
 import {
   JsonBlock,
+  MarkdownBlock,
   ReasoningBlock,
   TextBlock,
   TokenBreakdownTooltip,
@@ -221,6 +223,7 @@ export function InputMessagePreview({
   const toolCalls = getMessageToolCalls(message);
   const toolResults = getMessageToolResults(message);
   const textContent = getTextContent(message.content);
+  const previewText = textContent ? stripMarkdownForPreview(textContent) : '';
   const reasoningContent = getReasoningContent(message.content);
   const partCount =
     (textContent ? 1 : 0) +
@@ -247,7 +250,7 @@ export function InputMessagePreview({
         <div className="text-xs text-amber-500/60">[thinking]</div>
       )}
       {textContent && (
-        <div className="line-clamp-3 text-xs text-foreground/90">{textContent}</div>
+        <div className="line-clamp-3 text-xs text-foreground/90">{previewText}</div>
       )}
       {toolCalls.length > 0 && (
         <div className="space-y-1">
@@ -430,29 +433,43 @@ export function ToolDefinitionCard({ tool }: { tool: unknown }) {
         <span className="text-xs font-mono text-purple">{name}</span>
         {parameters && (
           <ChevronRight
-            className={`size-3 text-muted-foreground transition-transform ${
-              expanded ? 'rotate-90' : ''
-            }`}
+            className={`size-3 text-muted-foreground transition-transform ${expanded ? 'rotate-90' : ''
+              }`}
           />
         )}
       </button>
       {expanded && parameters && (
         <div className="border-t border-border px-2.5 pb-2.5">
           {description && (
-            <p className="mb-2 pt-2 text-[11px] leading-relaxed text-muted-foreground">
-              {description}
-            </p>
+            <MarkdownBlock
+              content={description}
+              className="mb-2 pt-2 text-[11px] leading-relaxed text-muted-foreground"
+            />
           )}
           <JsonBlock data={parameters} compact />
         </div>
       )}
       {!expanded && description && (
         <div className="-mt-1 px-2.5 pb-2">
-          <p className="truncate text-[11px] text-muted-foreground">{description}</p>
+          <p className="truncate text-[11px] text-muted-foreground">
+            {stripMarkdownForPreview(description)}
+          </p>
         </div>
       )}
     </div>
   );
+}
+
+function ToolResultContent({ data }: { data: unknown }) {
+  if (typeof data === 'string') {
+    return (
+      <div className="max-h-72 overflow-y-auto">
+        <MarkdownBlock content={data} className="text-xs leading-relaxed text-foreground" />
+      </div>
+    );
+  }
+
+  return <JsonBlock data={data} compact={false} />;
 }
 
 export function CollapsibleToolCall({
@@ -477,9 +494,8 @@ export function CollapsibleToolCall({
         onClick={() => setExpanded(previous => !previous)}
       >
         <ChevronRight
-          className={`size-3 shrink-0 text-purple transition-transform ${
-            expanded ? 'rotate-90' : ''
-          }`}
+          className={`size-3 shrink-0 text-purple transition-transform ${expanded ? 'rotate-90' : ''
+            }`}
         />
         <Wrench className="size-3 shrink-0 text-purple" />
         <div className="flex min-w-0 items-center gap-2">
@@ -534,9 +550,8 @@ export function CollapsibleToolResult({
         onClick={() => setExpanded(previous => !previous)}
       >
         <ChevronRight
-          className={`size-3 shrink-0 text-success transition-transform ${
-            expanded ? 'rotate-90' : ''
-          }`}
+          className={`size-3 shrink-0 text-success transition-transform ${expanded ? 'rotate-90' : ''
+            }`}
         />
         <div className="flex min-w-0 items-center gap-2">
           <span className="text-xs font-medium text-success">Result</span>
@@ -561,7 +576,7 @@ export function CollapsibleToolResult({
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Output
           </div>
-          <JsonBlock data={data} compact={false} />
+          <ToolResultContent data={data} />
         </div>
       )}
     </div>
@@ -586,9 +601,8 @@ export function ToolCallCard({
         onClick={() => setExpanded(previous => !previous)}
       >
         <ChevronRight
-          className={`size-3 shrink-0 text-purple transition-transform ${
-            expanded ? 'rotate-90' : ''
-          }`}
+          className={`size-3 shrink-0 text-purple transition-transform ${expanded ? 'rotate-90' : ''
+            }`}
         />
         <Wrench className="size-3 shrink-0 text-purple" />
         <div className="flex min-w-0 items-center gap-2">
@@ -614,7 +628,7 @@ export function ToolCallCard({
                 <div className="mb-2 text-[10px] font-medium uppercase tracking-wider text-success">
                   Output
                 </div>
-                <JsonBlock data={result} compact={false} />
+                <ToolResultContent data={result} />
               </div>
             )}
           </div>
@@ -668,21 +682,19 @@ export function RawDataSection({ step }: { step: ParsedStepRecord }) {
               {hasProviderStream && (
                 <div className="flex items-center rounded-md border border-border/50 bg-background/50 p-1 text-[10px]">
                   <button
-                    className={`rounded px-2 py-0.5 transition-colors ${
-                      responseView === 'parsed'
-                        ? 'bg-background text-foreground shadow-sm'
-                        : 'text-muted-foreground hover:text-foreground'
-                    }`}
+                    className={`rounded px-2 py-0.5 transition-colors ${responseView === 'parsed'
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                      }`}
                     onClick={() => setResponseView('parsed')}
                   >
                     AI SDK
                   </button>
                   <button
-                    className={`rounded px-2 py-0.5 transition-colors ${
-                      responseView === 'raw'
-                        ? 'bg-background text-foreground shadow-sm'
-                        : 'text-muted-foreground hover:text-foreground'
-                    }`}
+                    className={`rounded px-2 py-0.5 transition-colors ${responseView === 'raw'
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                      }`}
                     onClick={() => setResponseView('raw')}
                   >
                     Provider

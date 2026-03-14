@@ -20,6 +20,7 @@ import {
   getInputTokenBreakdown,
   getOutputTokenBreakdown,
   getTotalTokens,
+  stripMarkdownForPreview,
 } from '@/lib/viewer-helpers';
 import type {
   InputTokenBreakdown,
@@ -30,7 +31,12 @@ import type {
   StepInputSummary,
   StepSummaryInfo,
 } from '@/lib/viewer-types';
-import { RunStatusBadge, TokenBreakdownTooltip } from '@/components/viewer/shared';
+import {
+  CollapsibleMarkdownBlock,
+  MarkdownBlock,
+  RunStatusBadge,
+  TokenBreakdownTooltip,
+} from '@/components/viewer/shared';
 
 export function RunHeader({
   run,
@@ -89,9 +95,11 @@ export function RunHeader({
       </div>
 
       {headerSummary && (
-        <p className="mt-2.5 text-[13px] leading-relaxed text-muted-foreground">
-          {headerSummary}
-        </p>
+        <CollapsibleMarkdownBlock
+          content={headerSummary}
+          className="mt-2.5 text-[13px] leading-relaxed text-muted-foreground"
+          collapsedHeightClass="max-h-72"
+        />
       )}
 
       {parent && (
@@ -127,6 +135,7 @@ export function RunTreeItem({
   const isCollapsed = collapsedRunIDs.has(node.id);
   const [isHovered, setIsHovered] = React.useState(false);
   const preview = node.summary || node.input_preview || 'No summary yet.';
+  const previewText = stripMarkdownForPreview(preview);
   const treeOffset = depth > 0 ? depth * 18 : 0;
 
   const statusIcon =
@@ -228,7 +237,7 @@ export function RunTreeItem({
                   }
               }
             >
-              {preview}
+              {previewText}
             </div>
           </div>
         </button>

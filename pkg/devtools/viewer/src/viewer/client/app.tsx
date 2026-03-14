@@ -39,6 +39,7 @@ import {
   getStepSummary,
   getToolResultsFromNextStep,
   normalizeRunDetail,
+  stripMarkdownForPreview,
   validateRunTree,
 } from '@/lib/viewer-helpers';
 import type {
@@ -376,9 +377,8 @@ function App() {
       <div className="flex min-w-0 flex-1 overflow-hidden">
         <aside
           ref={sidebarRef}
-          className={`flex min-h-0 shrink-0 flex-col border-r border-border bg-sidebar ${
-            isSidebarResizing ? '' : 'transition-[width] duration-200 ease-out'
-          }`}
+          className={`flex min-h-0 shrink-0 flex-col border-r border-border bg-sidebar ${isSidebarResizing ? '' : 'transition-[width] duration-200 ease-out'
+            }`}
           style={{ width: `${sidebarPanelWidth}px` }}
         >
           <div className={`border-b border-border bg-sidebar ${isSidebarCollapsed ? 'px-2 py-3' : 'px-3 py-3'}`}>
@@ -598,9 +598,11 @@ function App() {
                                           <RunStatusBadge run={child} compact />
                                         </div>
                                         <div className="line-clamp-1 text-[11px] text-muted-foreground">
-                                          {child.summary ||
+                                          {stripMarkdownForPreview(
+                                            child.summary ||
                                             child.input_preview ||
-                                            'No summary yet.'}
+                                            'No summary yet.',
+                                          )}
                                         </div>
                                       </div>
                                       <ExternalLink className="ml-3 mt-0.5 size-4 shrink-0 text-muted-foreground" />

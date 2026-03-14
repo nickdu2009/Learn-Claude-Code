@@ -282,7 +282,7 @@ export function getStepInputSummary(
     const text = getTextContent(message.content);
     return {
       label: 'User',
-      detail: text ? truncate(text, 120) : undefined,
+      detail: text ? truncate(stripMarkdownForPreview(text), 120) : undefined,
     };
   }
 
@@ -309,7 +309,7 @@ export function getStepInputSummary(
   if (text) {
     return {
       label: formatRole(lastMessage.role),
-      detail: truncate(text, 120),
+      detail: truncate(stripMarkdownForPreview(text), 120),
     };
   }
 
@@ -644,6 +644,27 @@ export function formatScalarPreview(value: unknown, maxLength: number): string {
 
 export function truncate(value: string, maxLength: number): string {
   return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value;
+}
+
+export function stripMarkdownForPreview(value: string): string {
+  return value
+    .replace(/\r\n/g, '\n')
+    .replace(/```[\s\S]*?```/g, match =>
+      match
+        .replace(/^```[^\n]*\n?/, '')
+        .replace(/\n?```$/, ''),
+    )
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s*([-+*]|\d+\.)\s+(?:\[[ xX]\]\s+)?/gm, '')
+    .replace(/^\s*[-*_]{3,}\s*$/gm, ' ')
+    .replace(/(\*\*|__|\*|_|~~)/g, '')
+    .replace(/\n+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 export function formatRole(role: string): string {

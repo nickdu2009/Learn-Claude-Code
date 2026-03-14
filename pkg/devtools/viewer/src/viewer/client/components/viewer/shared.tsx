@@ -1,5 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { Brain, Check, ChevronRight, Copy, Loader2, MessageSquare } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
+import remarkGfm from 'remark-gfm';
 
 import { Badge } from '@/components/ui/badge';
 import {
@@ -8,6 +11,7 @@ import {
   getInputTokenBreakdown,
   getOutputTokenBreakdown,
 } from '@/lib/viewer-helpers';
+import { cn } from '@/lib/utils';
 import type {
   InputTokenBreakdown,
   JSONRecord,
@@ -98,6 +102,82 @@ export function RunStatusBadge({
   );
 }
 
+export function MarkdownBlock({
+  content,
+  className,
+}: {
+  content: string;
+  className?: string;
+}) {
+  return (
+    <div className={cn('markdown-content', className)}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkBreaks]}
+        components={{
+          a: ({ className: anchorClassName, ...props }) => (
+            <a
+              {...props}
+              className={cn(
+                'text-blue underline underline-offset-2 transition-colors hover:text-blue-hover',
+                anchorClassName,
+              )}
+              target="_blank"
+              rel="noreferrer"
+            />
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+export function CollapsibleMarkdownBlock({
+  content,
+  className,
+  collapsedHeightClass = 'max-h-80',
+  previewThreshold = 360,
+  previewLineThreshold = 12,
+}: {
+  content: string;
+  className?: string;
+  collapsedHeightClass?: string;
+  previewThreshold?: number;
+  previewLineThreshold?: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const shouldCollapse =
+    content.length > previewThreshold || content.split('\n').length > previewLineThreshold;
+
+  if (!shouldCollapse) {
+    return <MarkdownBlock content={content} className={className} />;
+  }
+
+  return (
+    <div>
+      <div className="relative">
+        <div className={cn(!expanded && `${collapsedHeightClass} overflow-hidden`)}>
+          <MarkdownBlock content={content} className={className} />
+        </div>
+        {!expanded && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-background via-background/95 to-transparent"
+          />
+        )}
+      </div>
+      <button
+        type="button"
+        className="mt-2 text-[11px] font-medium text-blue transition-colors hover:text-blue-hover"
+        onClick={() => setExpanded(previous => !previous)}
+      >
+        {expanded ? 'Show less' : 'Show more'}
+      </button>
+    </div>
+  );
+}
+
 export function ReasoningBlock({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false);
   const preview = content.length > 200 ? `${content.slice(0, 200)}…` : content;
@@ -123,9 +203,7 @@ export function ReasoningBlock({ content }: { content: string }) {
 
       {expanded && (
         <div className="border-t border-amber-500/30 bg-card/50 p-3">
-          <div className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/80">
-            {content}
-          </div>
+          <MarkdownBlock content={content} className="text-xs leading-relaxed text-foreground/80" />
         </div>
       )}
     </div>
@@ -157,8 +235,8 @@ export function TextBlock({
     <div className={`overflow-hidden rounded-md border ${isSystem ? 'border-blue-500/30' : 'border-border'}`}>
       <button
         className={`flex w-full items-center gap-2 px-3 py-2 transition-colors ${isSystem
-            ? 'bg-blue-500/10 hover:bg-blue-500/20'
-            : 'bg-muted/30 hover:bg-muted/50'
+          ? 'bg-blue-500/10 hover:bg-blue-500/20'
+          : 'bg-muted/30 hover:bg-muted/50'
           }`}
         onClick={toggleExpanded}
         onKeyDown={event => {
@@ -205,8 +283,8 @@ export function TextBlock({
               <Copy className="size-3 text-muted-foreground" />
             )}
           </button>
-          <div className="max-h-60 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground">
-            {content}
+          <div className="max-h-60 overflow-y-auto">
+            <MarkdownBlock content={content} className="pr-8 text-xs leading-relaxed text-foreground" />
           </div>
         </div>
       )}
