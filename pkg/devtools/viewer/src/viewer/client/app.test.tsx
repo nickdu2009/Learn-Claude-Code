@@ -484,7 +484,7 @@ describe('viewer App interactions', () => {
     await user.click(screen.getAllByRole('button', { name: /write_file/i })[0]!);
 
     expect(await screen.findByText('Linked Child Runs')).toBeInTheDocument();
-    expect(screen.getAllByText(/Child summary delegated review/i)).toHaveLength(2);
+    expect(screen.getByText(/Child summary delegated review/i)).toBeInTheDocument();
     expect(screen.queryByText(/## Child summary/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /1 available tool/i })).toBeInTheDocument();
     expect(screen.getByText('Input Tokens')).toBeInTheDocument();
@@ -497,6 +497,11 @@ describe('viewer App interactions', () => {
       screen.getByRole('button', { name: /Open all input messages \(2\)/i }),
     );
     expect(await screen.findByText('All Messages (2)')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+
+    await user.click(screen.getByRole('button', { name: /Open child runs/i, hidden: true }));
+    expect(await screen.findByText('Child Runs (1)')).toBeInTheDocument();
+    expect(screen.getAllByText(/Child summary delegated review/i)).toHaveLength(2);
     await user.keyboard('{Escape}');
 
     await user.click(screen.getByRole('button', { name: /Clear/i, hidden: true }));
@@ -702,7 +707,7 @@ describe('viewer App interactions', () => {
     expect(screen.getByText(/"items": \[/)).toBeInTheDocument();
   });
 
-  it('wraps long run titles and expands summary on hover', () => {
+  it('wraps long run titles and expands summary on click', () => {
     render(
       <RunTreeItem
         node={{
@@ -728,7 +733,7 @@ describe('viewer App interactions', () => {
       />,
     );
 
-    const treeButton = screen.getByRole('button');
+    const treeButton = screen.getByRole('button', { name: /This is an extremely long run title/i });
     expect(treeButton).not.toHaveClass('overflow-hidden');
 
     const title = screen.getByText(
@@ -744,10 +749,12 @@ describe('viewer App interactions', () => {
     expect(preview.getAttribute('style')).toContain('-webkit-line-clamp: 2;');
     expect(preview.getAttribute('style')).toContain('overflow: hidden;');
 
-    fireEvent.mouseEnter(treeButton);
+    const showMoreButton = within(treeButton).getByRole('button', { name: /Show more/i });
+    fireEvent.click(showMoreButton);
     expect(preview.getAttribute('style') ?? '').toBe('');
 
-    fireEvent.mouseLeave(treeButton);
+    const showLessButton = within(treeButton).getByRole('button', { name: /Show less/i });
+    fireEvent.click(showLessButton);
     expect(preview.getAttribute('style')).toContain('-webkit-line-clamp: 2;');
   });
 

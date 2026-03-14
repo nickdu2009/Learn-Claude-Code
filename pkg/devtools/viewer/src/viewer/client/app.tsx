@@ -4,7 +4,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ExternalLink,
   GripVertical,
   RefreshCw,
   Trash2,
@@ -20,7 +19,12 @@ import {
 } from '@/components/ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { RunHeader, RunTreeItem, StepSummary } from '@/components/viewer/run-tree';
+import {
+  ChildRunsDrawer,
+  RunHeader,
+  RunTreeItem,
+  StepSummary,
+} from '@/components/viewer/run-tree';
 import {
   InputPanel,
   OutputDisplay,
@@ -581,34 +585,20 @@ function App() {
                                 <div className="mb-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                                   Linked Child Runs
                                 </div>
-                                <div className="space-y-1.5 rounded-md border border-border/50 bg-background/50 p-2">
-                                  {linkedChildren.map(child => (
+                                <ChildRunsDrawer
+                                  childRuns={linkedChildren}
+                                  trigger={
                                     <button
-                                      key={child.id}
-                                      className="flex w-full items-start justify-between rounded-md border border-border/50 bg-background/50 px-3 py-2 text-left transition-colors hover:bg-accent/50"
-                                      onClick={() => {
-                                        selectRun(child.id).catch(setViewerError);
-                                      }}
+                                      type="button"
+                                      className="inline-flex items-center gap-2 rounded-md border border-border/50 bg-background/50 px-3 py-2 text-[12px] font-medium text-foreground transition-colors hover:bg-accent/50"
                                     >
-                                      <div className="min-w-0">
-                                        <div className="mb-1 flex items-center gap-2">
-                                          <span className="text-[13px] font-medium text-foreground">
-                                            {child.title}
-                                          </span>
-                                          <RunStatusBadge run={child} compact />
-                                        </div>
-                                        <div className="line-clamp-1 text-[11px] text-muted-foreground">
-                                          {stripMarkdownForPreview(
-                                            child.summary ||
-                                            child.input_preview ||
-                                            'No summary yet.',
-                                          )}
-                                        </div>
-                                      </div>
-                                      <ExternalLink className="ml-3 mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                                      <span>Open child runs</span>
+                                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                        {linkedChildren.length}
+                                      </span>
                                     </button>
-                                  ))}
-                                </div>
+                                  }
+                                />
                               </div>
                             )}
 
