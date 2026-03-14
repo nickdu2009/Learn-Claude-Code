@@ -36,6 +36,7 @@ func TestIntegrationReal_TeammateWritesFileAndRepliesToLead(t *testing.T) {
 
 	withWorkingDir(t, sandboxDir, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
 
 		service, err := newTeamService(ctx, client, getModel(), sandboxDir)
 		if err != nil {
@@ -64,8 +65,7 @@ func TestIntegrationReal_TeammateWritesFileAndRepliesToLead(t *testing.T) {
 		if trace.Version != 2 {
 			t.Fatalf("trace version = %d, want 2", trace.Version)
 		}
-		cancel()
-		waitForAllMembersStatus(t, service, team.StatusShutdown, 5*time.Second)
+		shutdownTeamServiceWithTimeout(t, service, 5*time.Second)
 	})
 }
 
@@ -87,6 +87,7 @@ func TestIntegrationReal_TeamHandoffReleaseNote(t *testing.T) {
 
 	withWorkingDir(t, sandboxDir, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
 
 		service, err := newTeamService(ctx, client, getModel(), sandboxDir)
 		if err != nil {
@@ -207,8 +208,7 @@ func TestIntegrationReal_TeamHandoffReleaseNote(t *testing.T) {
 			t.Fatalf("trace version = %d, want 2", trace.Version)
 		}
 		assertTraceHasLinkedTeammates(t, trace, "alice", "bob")
-		cancel()
-		waitForAllMembersStatus(t, service, team.StatusShutdown, 5*time.Second)
+		shutdownTeamServiceWithTimeout(t, service, 5*time.Second)
 	})
 }
 
@@ -276,16 +276,16 @@ func enableS09TraceForTest(t *testing.T) string {
 }
 
 type s09IntegrationTraceFile struct {
-	Version int                   `json:"version"`
-	Runs    []s09IntegrationRun   `json:"runs"`
-	Steps   []s09IntegrationStep  `json:"steps"`
+	Version int                  `json:"version"`
+	Runs    []s09IntegrationRun  `json:"runs"`
+	Steps   []s09IntegrationStep `json:"steps"`
 }
 
 type s09IntegrationRun struct {
-	ID          string  `json:"id"`
-	Kind        string  `json:"kind"`
-	Title       string  `json:"title"`
-	ParentRunID *string `json:"parent_run_id"`
+	ID           string  `json:"id"`
+	Kind         string  `json:"kind"`
+	Title        string  `json:"title"`
+	ParentRunID  *string `json:"parent_run_id"`
 	ParentStepID *string `json:"parent_step_id"`
 }
 
@@ -395,6 +395,21 @@ func waitForAllMembersStatus(t *testing.T, service interface {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for all teammates to reach %s", want)
+}
+
+func shutdownTeamServiceWithTimeout(t *testing.T, service interface {
+	Shutdown(context.Context) error
+	List() ([]team.Member, error)
+}, timeout time.Duration) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	if err := service.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	waitForAllMembersStatus(t, service, team.StatusShutdown, timeout)
 }
 
 func waitForInboxMessageWithTimeout(t *testing.T, service interface {
@@ -530,19 +545,9 @@ func drainLeadWakeups(
 		case <-wakeups:
 			pass++
 			var err error
-			history, err = loop.RunWithManagedTrace(
-				ctx,
-				devtools.RunMeta{
-					Kind:         "main",
-					Title:        fmt.Sprintf("%s/drain-%d", t.Name(), pass),
-					InputPreview: "lead wakeup drain",
-				},
-				runner,
-				client,
-				getModel(),
-				history,
-				registry,
-			)
+			// Drain any trailing lead wakeups without creating a separate viewer run.
+			// This keeps the recorded scenario focused on the main handoff passes.
+			history, err = runner(ctx, client, getModel(), history, registry)
 			if err != nil {
 				return history, err
 			}
@@ -556,4 +561,3 @@ func drainLeadWakeups(
 		}
 	}
 }
-

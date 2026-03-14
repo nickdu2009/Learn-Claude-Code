@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/nickdu2009/learn-claude-code/pkg/devtools"
@@ -57,6 +58,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := teamService.Shutdown(shutdownCtx); err != nil {
+			fmt.Fprintln(os.Stderr, "team shutdown error:", err)
+		}
+	}()
 
 	registry := newS09Registry(teamService)
 

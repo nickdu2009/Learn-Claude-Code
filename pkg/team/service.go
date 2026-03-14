@@ -17,9 +17,10 @@ import (
 )
 
 type Service struct {
-	baseCtx context.Context
-	client  *openai.Client
-	model   string
+	baseCtx    context.Context
+	cancelBase context.CancelFunc
+	client     *openai.Client
+	model      string
 
 	repo    MemberRepository
 	mailbox Mailbox
@@ -31,7 +32,12 @@ type Service struct {
 	wakeupMu sync.Mutex
 	wakeups  map[string]chan struct{}
 
+	traceMu           sync.Mutex
+	teammateRunSeq    map[string]uint64
+	pendingRunReasons map[string][]string
+
 	nextMessageID atomic.Uint64
+	runWG         sync.WaitGroup
 }
 
 func NewService(
@@ -55,15 +61,20 @@ func NewService(
 	if err != nil {
 		return nil, err
 	}
+	serviceCtx, cancelBase := context.WithCancel(baseCtx)
 
 	svc := &Service{
-		baseCtx: baseCtx,
-		client:  client,
-		model:   strings.TrimSpace(model),
-		repo:    repo,
-		mailbox: mailbox,
-		members: make(map[string]Member, len(memberList)),
-		wakeups: make(map[string]chan struct{}),
+		baseCtx:    serviceCtx,
+		cancelBase: cancelBase,
+		client:     client,
+		model:      strings.TrimSpace(model),
+		repo:       repo,
+		mailbox:    mailbox,
+		members:    make(map[string]Member, len(memberList)),
+		wakeups:    make(map[string]chan struct{}),
+
+		teammateRunSeq:    make(map[string]uint64, len(memberList)),
+		pendingRunReasons: make(map[string][]string, len(memberList)),
 	}
 	svc.ensureWakeupLocked("lead")
 
@@ -134,12 +145,6 @@ func (s *Service) spawnWithTrace(ctx context.Context, name, role, prompt string)
 		s.mu.Unlock()
 		return Member{}, err
 	}
-	teammateRecorder, teammateRunMeta, err := s.newTeammateRecorder(ctx, member, prompt)
-	if err != nil {
-		s.mu.Unlock()
-		return Member{}, err
-	}
-
 	s.members[name] = member
 	s.ensureWakeupLocked(name)
 	if err := s.repo.SaveAll(s.snapshotMembersLocked()); err != nil {
@@ -153,7 +158,11 @@ func (s *Service) spawnWithTrace(ctx context.Context, name, role, prompt string)
 	}
 	s.mu.Unlock()
 
-	go s.runTeammate(member, prompt, systemPrompt, registry, teammateRecorder, teammateRunMeta)
+	s.runWG.Add(1)
+	go func() {
+		defer s.runWG.Done()
+		s.runTeammate(ctx, member, prompt, systemPrompt, registry)
+	}()
 	return member, nil
 }
 
@@ -203,6 +212,7 @@ func (s *Service) Send(sender, recipient, content, msgType string) error {
 	if err := s.mailbox.Send(msg); err != nil {
 		return err
 	}
+	s.noteRunWakeup(recipient, sender, msgType, content)
 	s.signalWakeup(recipient)
 	return nil
 }
@@ -276,36 +286,40 @@ func (s *Service) Wakeups(recipient string) <-chan struct{} {
 	return s.ensureWakeupLockedNoMutex(recipient)
 }
 
+func (s *Service) Wait() {
+	s.runWG.Wait()
+}
+
+func (s *Service) Shutdown(ctx context.Context) error {
+	if s.cancelBase != nil {
+		s.cancelBase()
+	}
+	if ctx == nil {
+		s.Wait()
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.Wait()
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (s *Service) runTeammate(
+	traceCtx context.Context,
 	member Member,
 	prompt string,
 	systemPrompt string,
 	registry *tools.Registry,
-	recorder devtools.Recorder,
-	runMeta devtools.RunMeta,
 ) {
-	runCtx := s.baseCtx
-	runResult := devtools.RunResult{
-		Status:           "completed",
-		CompletionReason: "normal",
-		Summary:          fmt.Sprintf("teammate %s finished", member.Name),
-	}
-	if recorder != nil {
-		runCtx = devtools.WithRecorder(runCtx, recorder)
-		if err := recorder.BeginRun(runCtx, runMeta); err != nil {
-			_ = s.Send(member.Name, "lead", fmt.Sprintf("teammate %s failed to begin trace: %v", member.Name, err), MessageTypeMessage)
-			_ = s.setStatus(member.Name, StatusIdle)
-			return
-		}
-		defer func() {
-			if s.baseCtx.Err() != nil {
-				runResult.CompletionReason = "signal"
-				runResult.Summary = fmt.Sprintf("teammate %s stopped with context cancellation", member.Name)
-			}
-			_ = recorder.FinishRun(runCtx, runResult)
-		}()
-	}
-
 	if s.client == nil {
 		_ = s.Send(member.Name, "lead", fmt.Sprintf("teammate %s has no configured client", member.Name), MessageTypeMessage)
 		_ = s.setStatus(member.Name, StatusIdle)
@@ -322,19 +336,41 @@ func (s *Service) runTeammate(
 		openai.SystemMessage(systemPrompt),
 		openai.UserMessage(prompt),
 	}
-	var err error
 
 	for {
-		history, err = runner(runCtx, s.client, s.model, history, registry)
+		runMeta := s.nextTeammateRunMeta(member, prompt)
+		runResult := devtools.RunResult{
+			Status:           "completed",
+			CompletionReason: "normal",
+			Summary:          fmt.Sprintf("teammate %s finished", member.Name),
+		}
+		runCtx, recorder, err := s.beginTeammateRun(traceCtx, member, prompt, runMeta)
 		if err != nil {
+			_ = s.Send(member.Name, "lead", fmt.Sprintf("teammate %s failed to begin trace: %v", member.Name, err), MessageTypeMessage)
+			_ = s.setStatus(member.Name, StatusIdle)
+			return
+		}
+
+		nextHistory, err := runner(runCtx, s.client, s.model, history, registry)
+		if err != nil {
+			if s.baseCtx.Err() != nil {
+				runResult.CompletionReason = "signal"
+				runResult.Summary = fmt.Sprintf("teammate %s stopped with context cancellation", member.Name)
+				s.finishTeammateRun(runCtx, recorder, member, runResult)
+				_ = s.setStatus(member.Name, StatusShutdown)
+				return
+			}
 			runResult.Status = "failed"
 			runResult.CompletionReason = "error"
 			runResult.Summary = fmt.Sprintf("teammate %s stopped with error", member.Name)
 			runResult.Error = err.Error()
 			_ = s.Send(member.Name, "lead", fmt.Sprintf("teammate %s stopped with error: %v", member.Name, err), MessageTypeMessage)
+			s.finishTeammateRun(runCtx, recorder, member, runResult)
 			_ = s.setStatus(member.Name, StatusIdle)
 			return
 		}
+		history = nextHistory
+		s.finishTeammateRun(runCtx, recorder, member, runResult)
 		if err := s.setStatus(member.Name, StatusIdle); err != nil {
 			return
 		}
@@ -353,6 +389,43 @@ func (s *Service) runTeammate(
 			}
 		}
 	}
+}
+
+func (s *Service) beginTeammateRun(
+	traceCtx context.Context,
+	member Member,
+	prompt string,
+	runMeta devtools.RunMeta,
+) (context.Context, devtools.Recorder, error) {
+	recorder, _, err := s.newTeammateRecorder(traceCtx, member, prompt)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	runCtx := s.baseCtx
+	if recorder != nil {
+		runCtx = devtools.WithRecorder(runCtx, recorder)
+		if err := recorder.BeginRun(runCtx, runMeta); err != nil {
+			return nil, nil, err
+		}
+	}
+	return runCtx, recorder, nil
+}
+
+func (s *Service) finishTeammateRun(
+	runCtx context.Context,
+	recorder devtools.Recorder,
+	member Member,
+	runResult devtools.RunResult,
+) {
+	if recorder == nil {
+		return
+	}
+	if s.baseCtx.Err() != nil {
+		runResult.CompletionReason = "signal"
+		runResult.Summary = fmt.Sprintf("teammate %s stopped with context cancellation", member.Name)
+	}
+	_ = recorder.FinishRun(runCtx, runResult)
 }
 
 func (s *Service) setStatus(name string, status Status) error {
@@ -439,11 +512,7 @@ func (s *Service) newTeammateRecorder(
 	member Member,
 	prompt string,
 ) (devtools.Recorder, devtools.RunMeta, error) {
-	meta := devtools.RunMeta{
-		Kind:         "teammate",
-		Title:        fmt.Sprintf("teammate %s (%s)", member.Name, member.Role),
-		InputPreview: previewPrompt(prompt, 160),
-	}
+	meta := newTeammateRunMeta(member, prompt, "", 0)
 
 	parentStepID := devtools.ParentStepFrom(ctx)
 	parentRecorder := devtools.RecorderFrom(ctx)
@@ -462,6 +531,101 @@ func (s *Service) newTeammateRecorder(
 	return devtools.NewRecorderFromEnv(), meta, nil
 }
 
+func newTeammateRunMeta(member Member, prompt string, reason string, seq uint64) devtools.RunMeta {
+	reason = previewPrompt(reason, 72)
+	title := fmt.Sprintf("teammate %s (%s)", member.Name, member.Role)
+	if seq > 0 {
+		title = fmt.Sprintf("%s #%d", title, seq)
+	}
+	if reason != "" {
+		title = title + " - " + reason
+	}
+
+	inputPreview := reason
+	if inputPreview == "" {
+		inputPreview = previewPrompt(prompt, 160)
+	}
+
+	return devtools.RunMeta{
+		Kind:         "teammate",
+		Title:        title,
+		InputPreview: inputPreview,
+	}
+}
+
+func (s *Service) nextTeammateRunMeta(member Member, prompt string) devtools.RunMeta {
+	s.traceMu.Lock()
+	defer s.traceMu.Unlock()
+
+	s.teammateRunSeq[member.Name]++
+	seq := s.teammateRunSeq[member.Name]
+	reason := summarizeRunReasons(s.pendingRunReasons[member.Name])
+	delete(s.pendingRunReasons, member.Name)
+
+	if reason == "" {
+		reason = "initial task: " + previewPrompt(prompt, 56)
+	}
+	return newTeammateRunMeta(member, prompt, reason, seq)
+}
+
+func (s *Service) noteRunWakeup(recipient, sender, msgType, content string) {
+	if recipient == "lead" {
+		return
+	}
+
+	reason := formatRunWakeupReason(sender, msgType, content)
+	if reason == "" {
+		return
+	}
+
+	s.traceMu.Lock()
+	defer s.traceMu.Unlock()
+	s.pendingRunReasons[recipient] = append(s.pendingRunReasons[recipient], reason)
+}
+
+func summarizeRunReasons(reasons []string) string {
+	switch len(reasons) {
+	case 0:
+		return ""
+	case 1:
+		return reasons[0]
+	case 2:
+		return previewPrompt(reasons[0]+"; "+reasons[1], 72)
+	default:
+		return previewPrompt(fmt.Sprintf("%s (+%d more)", reasons[0], len(reasons)-1), 72)
+	}
+}
+
+func formatRunWakeupReason(sender, msgType, content string) string {
+	sender = strings.TrimSpace(sender)
+	msgType = strings.TrimSpace(msgType)
+	content = previewPrompt(content, 48)
+	if sender == "" && content == "" {
+		return ""
+	}
+
+	if msgType == "" || msgType == MessageTypeMessage {
+		if sender == "" {
+			return content
+		}
+		if content == "" {
+			return sender + " message"
+		}
+		return fmt.Sprintf("%s message: %s", sender, content)
+	}
+
+	if sender == "" {
+		if content == "" {
+			return msgType
+		}
+		return fmt.Sprintf("%s: %s", msgType, content)
+	}
+	if content == "" {
+		return fmt.Sprintf("%s %s", sender, msgType)
+	}
+	return fmt.Sprintf("%s %s: %s", sender, msgType, content)
+}
+
 func previewPrompt(prompt string, limit int) string {
 	prompt = strings.Join(strings.Fields(strings.TrimSpace(prompt)), " ")
 	if prompt == "" {
@@ -475,4 +639,3 @@ func previewPrompt(prompt string, limit int) string {
 	}
 	return prompt[:limit-3] + "..."
 }
-

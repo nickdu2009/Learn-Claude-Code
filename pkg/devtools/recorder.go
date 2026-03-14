@@ -316,7 +316,7 @@ func (r *runRecorder) SpawnChild(ctx context.Context, parentStepID string, meta 
 			changed = true
 		}
 		return changed, nil
-	}, "run") ; err != nil {
+	}, "run"); err != nil {
 		return nil, err
 	}
 
@@ -816,8 +816,19 @@ func (r *runRecorder) writeDBLocked(db database) error {
 	if err != nil {
 		return err
 	}
-	tmpPath := r.store.dbPath + ".tmp"
-	if err := os.WriteFile(tmpPath, b, 0o644); err != nil {
+	tmpFile, err := os.CreateTemp(r.store.dbDir, filepath.Base(r.store.dbPath)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+	}()
+	if _, err := tmpFile.Write(b); err != nil {
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmpPath, r.store.dbPath)
