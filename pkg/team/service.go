@@ -37,7 +37,13 @@ type Service struct {
 	pendingRunReasons map[string][]string
 
 	nextMessageID atomic.Uint64
+	nextRequestID atomic.Uint64
 	runWG         sync.WaitGroup
+
+	protocolMu       sync.RWMutex
+	shutdownRequests map[string]ShutdownRequest
+	planRequests     map[string]PlanRequest
+	shutdownIntents  map[string]string
 }
 
 func NewService(
@@ -75,6 +81,9 @@ func NewService(
 
 		teammateRunSeq:    make(map[string]uint64, len(memberList)),
 		pendingRunReasons: make(map[string][]string, len(memberList)),
+		shutdownRequests:  make(map[string]ShutdownRequest),
+		planRequests:      make(map[string]PlanRequest),
+		shutdownIntents:   make(map[string]string),
 	}
 	svc.ensureWakeupLocked("lead")
 
@@ -174,7 +183,230 @@ func (s *Service) List() ([]Member, error) {
 	return out, nil
 }
 
+func (s *Service) RequestShutdown(teammate string) (ShutdownRequest, error) {
+	teammate, err := NormalizeName(teammate)
+	if err != nil {
+		return ShutdownRequest{}, err
+	}
+
+	s.mu.RLock()
+	member, ok := s.members[teammate]
+	s.mu.RUnlock()
+	if !ok {
+		return ShutdownRequest{}, fmt.Errorf("unknown teammate %q", teammate)
+	}
+	if member.Status == StatusShutdown {
+		return ShutdownRequest{}, fmt.Errorf("%q is already shutdown", teammate)
+	}
+
+	req := ShutdownRequest{
+		RequestID: s.newRequestID("shutdown"),
+		Target:    teammate,
+		Status:    RequestPending,
+		UpdatedAt: time.Now().UTC(),
+	}
+	s.protocolMu.Lock()
+	s.shutdownRequests[req.RequestID] = req
+	s.protocolMu.Unlock()
+
+	if err := s.sendWithExtra("lead", teammate, "Please shut down gracefully.", MessageTypeShutdownRequest, map[string]string{
+		"request_id": req.RequestID,
+	}); err != nil {
+		return ShutdownRequest{}, err
+	}
+	return req, nil
+}
+
+func (s *Service) CheckShutdownRequest(requestID string) (ShutdownRequest, error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return ShutdownRequest{}, fmt.Errorf("request id is required")
+	}
+
+	s.protocolMu.RLock()
+	defer s.protocolMu.RUnlock()
+
+	req, ok := s.shutdownRequests[requestID]
+	if !ok {
+		return ShutdownRequest{}, fmt.Errorf("unknown shutdown request %q", requestID)
+	}
+	return req, nil
+}
+
+func (s *Service) RespondShutdown(sender, requestID string, approve bool, reason string) (ShutdownRequest, error) {
+	sender, err := NormalizeName(sender)
+	if err != nil {
+		return ShutdownRequest{}, err
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return ShutdownRequest{}, fmt.Errorf("request id is required")
+	}
+	reason = strings.TrimSpace(reason)
+
+	s.mu.RLock()
+	_, ok := s.members[sender]
+	s.mu.RUnlock()
+	if !ok {
+		return ShutdownRequest{}, fmt.Errorf("unknown teammate %q", sender)
+	}
+
+	s.protocolMu.Lock()
+	req, ok := s.shutdownRequests[requestID]
+	if !ok {
+		s.protocolMu.Unlock()
+		return ShutdownRequest{}, fmt.Errorf("unknown shutdown request %q", requestID)
+	}
+	if req.Target != sender {
+		s.protocolMu.Unlock()
+		return ShutdownRequest{}, fmt.Errorf("shutdown request %q targets %q, not %q", requestID, req.Target, sender)
+	}
+	req.Status = RequestRejected
+	if approve {
+		req.Status = RequestApproved
+		s.shutdownIntents[sender] = requestID
+	} else {
+		delete(s.shutdownIntents, sender)
+	}
+	req.Reason = reason
+	req.UpdatedAt = time.Now().UTC()
+	s.shutdownRequests[requestID] = req
+	s.protocolMu.Unlock()
+
+	content := reason
+	if content == "" {
+		content = fmt.Sprintf("shutdown_response::%s::%t", requestID, approve)
+	}
+	if err := s.sendWithExtra(sender, "lead", content, MessageTypeShutdownResponse, map[string]string{
+		"request_id": requestID,
+		"approve":    fmt.Sprintf("%t", approve),
+		"reason":     reason,
+	}); err != nil {
+		return ShutdownRequest{}, err
+	}
+	return req, nil
+}
+
+func (s *Service) SubmitPlan(sender, plan string) (PlanRequest, error) {
+	sender, err := NormalizeName(sender)
+	if err != nil {
+		return PlanRequest{}, err
+	}
+	plan = strings.TrimSpace(plan)
+	if plan == "" {
+		return PlanRequest{}, fmt.Errorf("plan is required")
+	}
+
+	s.mu.RLock()
+	_, ok := s.members[sender]
+	s.mu.RUnlock()
+	if !ok {
+		return PlanRequest{}, fmt.Errorf("unknown teammate %q", sender)
+	}
+
+	req := PlanRequest{
+		RequestID: s.newRequestID("plan"),
+		From:      sender,
+		Plan:      plan,
+		Status:    RequestPending,
+		UpdatedAt: time.Now().UTC(),
+	}
+	s.protocolMu.Lock()
+	s.planRequests[req.RequestID] = req
+	s.protocolMu.Unlock()
+
+	if err := s.sendWithExtra(sender, "lead", plan, MessageTypePlanApprovalResponse, map[string]string{
+		"request_id": req.RequestID,
+		"plan":       plan,
+	}); err != nil {
+		return PlanRequest{}, err
+	}
+	return req, nil
+}
+
+func (s *Service) ReviewPlan(requestID string, approve bool, feedback string) (PlanRequest, error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return PlanRequest{}, fmt.Errorf("request id is required")
+	}
+	feedback = strings.TrimSpace(feedback)
+
+	s.protocolMu.Lock()
+	req, ok := s.planRequests[requestID]
+	if !ok {
+		s.protocolMu.Unlock()
+		return PlanRequest{}, fmt.Errorf("unknown plan request %q", requestID)
+	}
+	req.Status = RequestRejected
+	if approve {
+		req.Status = RequestApproved
+	}
+	req.Feedback = feedback
+	req.UpdatedAt = time.Now().UTC()
+	s.planRequests[requestID] = req
+	s.protocolMu.Unlock()
+
+	content := feedback
+	if content == "" {
+		content = fmt.Sprintf("plan_approval::%s::%t", requestID, approve)
+	}
+	if err := s.sendWithExtra("lead", req.From, content, MessageTypePlanApprovalResponse, map[string]string{
+		"request_id": requestID,
+		"approve":    fmt.Sprintf("%t", approve),
+		"feedback":   feedback,
+	}); err != nil {
+		return PlanRequest{}, err
+	}
+	return req, nil
+}
+
+func (s *Service) ListShutdownRequests() []ShutdownRequest {
+	s.protocolMu.RLock()
+	defer s.protocolMu.RUnlock()
+
+	requests := make([]ShutdownRequest, 0, len(s.shutdownRequests))
+	for _, req := range s.shutdownRequests {
+		requests = append(requests, req)
+	}
+	slices.SortFunc(requests, func(a, b ShutdownRequest) int {
+		switch {
+		case a.RequestID < b.RequestID:
+			return -1
+		case a.RequestID > b.RequestID:
+			return 1
+		default:
+			return 0
+		}
+	})
+	return requests
+}
+
+func (s *Service) ListPlanRequests() []PlanRequest {
+	s.protocolMu.RLock()
+	defer s.protocolMu.RUnlock()
+
+	requests := make([]PlanRequest, 0, len(s.planRequests))
+	for _, req := range s.planRequests {
+		requests = append(requests, req)
+	}
+	slices.SortFunc(requests, func(a, b PlanRequest) int {
+		switch {
+		case a.RequestID < b.RequestID:
+			return -1
+		case a.RequestID > b.RequestID:
+			return 1
+		default:
+			return 0
+		}
+	})
+	return requests
+}
+
 func (s *Service) Send(sender, recipient, content, msgType string) error {
+	return s.sendWithExtra(sender, recipient, content, msgType, nil)
+}
+
+func (s *Service) sendWithExtra(sender, recipient, content, msgType string, extra map[string]string) error {
 	sender, err := NormalizeName(sender)
 	if err != nil {
 		return err
@@ -208,6 +440,9 @@ func (s *Service) Send(sender, recipient, content, msgType string) error {
 		To:        recipient,
 		Content:   content,
 		CreatedAt: time.Now().UTC(),
+	}
+	if len(extra) > 0 {
+		msg.Extra = mapsClone(extra)
 	}
 	if err := s.mailbox.Send(msg); err != nil {
 		return err
@@ -371,6 +606,12 @@ func (s *Service) runTeammate(
 		}
 		history = nextHistory
 		s.finishTeammateRun(runCtx, recorder, member, runResult)
+		if _, shouldShutdown := s.consumeShutdownIntent(member.Name); shouldShutdown {
+			if err := s.setStatus(member.Name, StatusShutdown); err != nil {
+				return
+			}
+			return
+		}
 		if err := s.setStatus(member.Name, StatusIdle); err != nil {
 			return
 		}
@@ -496,6 +737,15 @@ func (s *Service) newMessageID() string {
 	return fmt.Sprintf("msg-%d-%d", time.Now().UTC().UnixNano(), id)
 }
 
+func (s *Service) newRequestID(prefix string) string {
+	id := s.nextRequestID.Add(1)
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "request"
+	}
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UTC().UnixNano(), id)
+}
+
 func formatMessages(messages []Message) (string, error) {
 	if len(messages) == 0 {
 		return "[]", nil
@@ -503,6 +753,22 @@ func formatMessages(messages []Message) (string, error) {
 	data, err := json.MarshalIndent(messages, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshal messages: %w", err)
+	}
+	return string(data), nil
+}
+
+func FormatShutdownRequest(req ShutdownRequest) (string, error) {
+	data, err := json.MarshalIndent(req, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal shutdown request: %w", err)
+	}
+	return string(data), nil
+}
+
+func FormatPlanRequest(req PlanRequest) (string, error) {
+	data, err := json.MarshalIndent(req, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal plan request: %w", err)
 	}
 	return string(data), nil
 }
@@ -594,6 +860,31 @@ func summarizeRunReasons(reasons []string) string {
 	default:
 		return previewPrompt(fmt.Sprintf("%s (+%d more)", reasons[0], len(reasons)-1), 72)
 	}
+}
+
+func (s *Service) consumeShutdownIntent(name string) (string, bool) {
+	s.protocolMu.Lock()
+	defer s.protocolMu.Unlock()
+
+	requestID, ok := s.shutdownIntents[name]
+	if ok {
+		delete(s.shutdownIntents, name)
+	}
+	return requestID, ok
+}
+
+func mapsClone(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func formatRunWakeupReason(sender, msgType, content string) string {

@@ -1,0 +1,20 @@
+## Auth Migration Checklist
+
+### Pre-Migration
+[ ] auth-v2 deployed and healthy in staging
+[ ] All SDKs updated to v2.4+ and smoke-tested
+[ ] Feature flag `use_signed_tokens` initialized to `false`
+[ ] Revocation list (jti blacklist) TTL set to 15m
+[ ] Observability dashboards configured for auth-v2 metrics
+
+### During Rollout
+[ ] 1% traffic shifted → confirm no errors
+[ ] 10% traffic shifted → verify latency p95 < 300ms
+[ ] 50% traffic shifted → validate session persistence & refresh
+[ ] 100% traffic shifted → run full E2E test suite
+
+### Post-Migration
+[ ] Legacy token issuance disabled in auth-v2
+[ ] auth-v1 decommissioned after 7 days of zero traffic
+[ ] IAM docs and SDK guides updated
+[ ] Runbook archived in Confluence under /auth/migration/2026Q1

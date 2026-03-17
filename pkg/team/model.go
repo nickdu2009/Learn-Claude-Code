@@ -15,6 +15,14 @@ const (
 	StatusShutdown Status = "shutdown"
 )
 
+type RequestStatus string
+
+const (
+	RequestPending  RequestStatus = "pending"
+	RequestApproved RequestStatus = "approved"
+	RequestRejected RequestStatus = "rejected"
+)
+
 const (
 	MessageTypeMessage              = "message"
 	MessageTypeBroadcast            = "broadcast"
@@ -48,6 +56,23 @@ type TeamConfig struct {
 	Members  []Member `json:"members"`
 }
 
+type ShutdownRequest struct {
+	RequestID string        `json:"request_id"`
+	Target    string        `json:"target"`
+	Status    RequestStatus `json:"status"`
+	Reason    string        `json:"reason,omitempty"`
+	UpdatedAt time.Time     `json:"updated_at"`
+}
+
+type PlanRequest struct {
+	RequestID string        `json:"request_id"`
+	From      string        `json:"from"`
+	Plan      string        `json:"plan"`
+	Status    RequestStatus `json:"status"`
+	Feedback  string        `json:"feedback,omitempty"`
+	UpdatedAt time.Time     `json:"updated_at"`
+}
+
 func NormalizeName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if !teammateNamePattern.MatchString(name) {
@@ -77,6 +102,15 @@ func NormalizeStatus(status Status) (Status, error) {
 	}
 }
 
+func NormalizeRequestStatus(status RequestStatus) (RequestStatus, error) {
+	switch status {
+	case RequestPending, RequestApproved, RequestRejected:
+		return status, nil
+	default:
+		return "", fmt.Errorf("invalid request status %q", status)
+	}
+}
+
 func NormalizeMessageType(msgType string) (string, error) {
 	msgType = strings.TrimSpace(msgType)
 	switch msgType {
@@ -90,4 +124,3 @@ func NormalizeMessageType(msgType string) (string, error) {
 		return "", fmt.Errorf("invalid message type %q", msgType)
 	}
 }
-
